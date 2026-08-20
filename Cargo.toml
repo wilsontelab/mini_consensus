@@ -1,0 +1,25 @@
+[package]
+name = "mini-consensus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Minimap2-assisted partial order alignment (POA) consensus resolver"
+license = "MIT"
+repository = "https://github.com/wilsontelab/mini_consensus"
+homepage = "https://github.com/wilsontelab/mini_consensus"
+# documentation = "https://docs.rs/mini_consensus"
+readme = "README.md"
+authors = ["Thomas Wilson <wilsonte@umich.edu>", "James Ferguson <j.ferguson@garvan.org.au>"]
+keywords = ["bioinformatics", "consensus", "alignment", "genomics", "minimap2", "poa"]
+categories = ["science", "algorithms"]
+
+[lib]
+name = "mini_consensus"
+path = "src/lib.rs"
+
+[dependencies]
+# published as `rammap-core` but imported in code as `rammap`
+rammap-core = { version = "1.1", default-features = false, features = ["parallel"] }
+rustc-hash = "2.1.0"
+
+rand = "0.8"
