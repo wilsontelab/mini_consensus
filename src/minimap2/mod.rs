@@ -28,7 +28,7 @@ pub struct Resolver {
     seqs: Vec<Vec<BaseByte>>,
     scaffold: Vec<BaseByte>,
     is_identical: Vec<bool>, // map of scaffold whether all seqs are identical at this position
-    seq_maps: Vec<Vec<SeqPos0>>, // outer=seq, inner=scaffold SeqPos0, value=seq SeqPos0
+    seq_maps: Vec<Vec<Option<SeqPos0>>>, // outer=seq, inner=scaffold SeqPos0, value=seq SeqPos0
     scaffold_pos0: SeqPos0,
     seq_pos0: SeqPos0,
 }
@@ -40,10 +40,6 @@ impl Resolver {
     /// Capacity will grow and persist stably as needed if the number of 
     /// sequences or their lengths exceed the values provided here.
     /// 
-    /// `poa_bandwidth` determines how much of the POA matrix is filled, with a 
-    /// default of . Use 
-    /// a higher number
-    /// 
     /// `anchor_len` is the required number of bases identical among all
     /// sequences on each side of each POA-resolved span (default: 5 bases, thus
     /// identity spans less than 10 bases will be resolved by POA along with 
@@ -52,11 +48,11 @@ impl Resolver {
         aligner_preset: Preset,
         n_seqs:  usize,
         n_bases: usize,
-        anchor_len:    Option<usize>,
+        anchor_len: Option<usize>,
     ) -> Self {
         const DEFAULT_ANCHOR_LEN: usize = 5;
         let poa_config: PoaConfig = PoaConfig {
-            band_width: 0, // instead, we update band_width based on seq len differences belows
+            band_width: 0, // instead, we update band_width based on seq len differences below
             adaptive_band: false,
             alignment_mode: AlignmentMode::Global, // since all POA is anchored
             ..PoaConfig::default()
@@ -103,13 +99,12 @@ impl Resolver {
     ) {
         self.set_scaffold(scaffold);
         // initialize the scaffold pairwise aligner
-        // ensure that the CIGAR string is reported with =/X ops instead of M
         let mut aligner = Aligner::from_seqs(
             vec![("scaffold".to_string(), scaffold.to_vec())], 
             self.aligner_preset
         );
+        // ensure that the CIGAR string is reported with =/X ops instead of M
         aligner.output_config_mut().eqx = true;
-        aligner.output_config_mut().do_cs = true;
         self.aligner = Some(aligner);
     }
 
@@ -132,8 +127,6 @@ impl Resolver {
         for chunk in self.is_identical.chunk_by(|a, b| a == b){
             let is_identical = chunk[0];
             let n_chunk_pos = chunk.len();
-
-            println!("{} {}", is_identical, n_chunk_pos);
 
             // in a span where all (or all but one) seqs matched scaffold
             if is_identical {
@@ -159,23 +152,14 @@ impl Resolver {
                     let mut min_len = scaffold_end1 - scaffold_start0;
                     let mut max_len = min_len;
                     let seq_ranges: Vec<_> = (0..n_seqs).map(|seq0| {
-                        let start0 =  self.seq_maps[seq0][scaffold_start0];
-                        let end1 = self.seq_maps[seq0][scaffold_end1 - 1] + 1;
-                        let len = end1 - start0;
+                        let Some(start0) = self.seq_maps[seq0][scaffold_start0] else { return None; };
+                        let Some(end0)   = self.seq_maps[seq0][scaffold_end1 - 1] else { return None; };
+                        let len = end0 - start0 + 1;
                         if len < min_len { min_len = len }
                         if len > max_len { max_len = len }
-                        (start0, end1)
+                        Some((start0, end0 + 1))
                     }).collect();
                     let bandwidth = max_len - min_len + 1;
-
-                println!("{}\t{}\t{}\t{}\t{}\t{}", 
-                    left_end1 - left_start0,
-                    chunk_pos0 - left_end1, 
-                    min_len,
-                    scaffold_end1 - scaffold_start0,
-                    max_len,
-                    bandwidth
-                );
 
                     // seed the POA graph
                     self.poa.seed_new_graph(
@@ -185,8 +169,9 @@ impl Resolver {
 
                     // add/align all other sequences to the graph
                     for seq0 in 0..n_seqs {
-                        let range = seq_ranges[seq0];
-                        self.poa.add_seq(&self.seqs[seq0][range.0..range.1]);                        
+                        if let Some(range) = seq_ranges[seq0] {
+                            self.poa.add_seq(&self.seqs[seq0][range.0..range.1]); 
+                        }                   
                     }
 
                     // resolve and append the local consensus by heaviest bundle
@@ -216,7 +201,7 @@ impl Resolver {
             chunk_pos0 += n_chunk_pos;
         }
 
-        // fill out any right overhang of the seed sequence with its bases
+        // fill out any right overhang of the scaffold with its bases
         if left_start0 < scaffold_len {
             consensus.extend(&self.scaffold[left_start0..scaffold_len]);
         }

@@ -1,5 +1,5 @@
 //! Resolver support for adding raw sequences as consensus inputs, where 
-//! sequences are aligned to the scaffold by this crate.
+//! sequences are aligned to the scaffold by this crate using minimap2.
 
 // imports
 use rammap::{Strand, CigarOp};
@@ -33,16 +33,6 @@ impl Resolver {
         let mapping = &map_result.mappings[0];
         let Some(cigar_ops) = &mapping.cigar_ops else { return None; };
 
-        // ends do get trimmed with errors near termini
-        println!(
-            "{}-{} {}-{} {:?}", 
-            mapping.query_start + 1,
-            mapping.query_end,
-            mapping.target_start + 1,
-            mapping.target_end,
-            &mapping.cigar
-        );
-
         // as needed, reverse complement seq to scaffold orientation
         self.seq_pos0 = if mapping.strand == Strand::Reverse {
             seq.iter_mut().for_each(|base| *base = match base {
@@ -69,7 +59,7 @@ impl Resolver {
             mapping.query_start
         };
 
-        // let base_capacity = scaffold_len.max(self.base_capacity);
+        // reset the scaffold map
         let scaffold_len = self.is_identical.len();
         let base_capacity = scaffold_len.max(self.base_capacity);
         if let Some(seq_map) = self.seq_maps.get_mut(seq0){
@@ -80,10 +70,16 @@ impl Resolver {
         } 
 
         // fill any left-side gaps in the alignment
+
+        // TODO: possibly improvement needed here and on right-side gap below
+        // we want to allow seqs nested within scaffold not proceeding to scaffold edge
+        // but variants near the sequence edge lead to trimming and lost variants
+        // and thus an undesirable reference bias at the edges
+
         self.scaffold_pos0 = mapping.target_start;
         if self.scaffold_pos0 > 0 {
-            (0..self.scaffold_pos0).for_each(|scaffold_pos0| {
-                self.seq_maps[seq0].push(0);
+            (0..self.scaffold_pos0).for_each(|_scaffold_pos0| {
+                self.seq_maps[seq0].push(None);
                 // self.is_identical[scaffold_pos0] = false;
             });
         }
@@ -95,14 +91,16 @@ impl Resolver {
 
         // fill any right-side gaps in the alignment
         while self.scaffold_pos0 < self.is_identical.len() {
-            self.seq_maps[seq0].push(0);
+            self.seq_maps[seq0].push(None);
             // self.is_identical[self.scaffold_pos0] = false;
             self.scaffold_pos0 += 1;
         }
+
+        // return success
         Some(())
     }
 
-    /// Process a single minimap2 eqx CIGAR operation to build the scaffold maps.
+    /// Process a single minimap2 eqx CIGAR operation to build a scaffold map.
     fn process_cigar_op_eqx(&mut self, seq0: usize, op: &CigarOp){
         // 0 => 'M', 1 => 'I', 2 => 'D', 3 => 'N', 4 => 'S', 5 => 'H', 7 => '=', 8 => 'X', _ => '?'
         const MATCH:     u8 = 7;
@@ -112,7 +110,7 @@ impl Resolver {
         match op.op {
             MATCH => { 
                 (0..op.len).for_each(|_| {
-                    self.seq_maps[seq0].push(self.seq_pos0);
+                    self.seq_maps[seq0].push(Some(self.seq_pos0));
                     self.seq_pos0 += 1;
                     self.scaffold_pos0 += 1;
                 });
@@ -123,7 +121,7 @@ impl Resolver {
                 // qqqqQqqqq
                 //     A
                 (0..op.len).for_each(|_| {
-                    self.seq_maps[seq0].push(self.seq_pos0);
+                    self.seq_maps[seq0].push(Some(self.seq_pos0));
                     self.is_identical[self.scaffold_pos0] = false;
                     self.seq_pos0 += 1;
                     self.scaffold_pos0 += 1;
@@ -144,7 +142,7 @@ impl Resolver {
                 // qqqq   Qqqq
                 //   aA   Aa
                 (0..op.len).for_each(|_| {
-                    self.seq_maps[seq0].push(self.seq_pos0 - 1);
+                    self.seq_maps[seq0].push(Some(self.seq_pos0 - 1));
                     self.is_identical[self.scaffold_pos0] = false;
                     self.scaffold_pos0 += 1;
                 });

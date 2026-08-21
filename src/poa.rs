@@ -1,5 +1,5 @@
-//! Stripped-down version of the POA engine from crate poa_consensus, modified
-//! for our specific use case with a reusable Poa graph object.
+//! Stripped-down and refactored implemenation of the POA engine from crate 
+//! `poa_consensus`, modified for our use case with a reusable Poa graph object.
 //! 
 //! https://github.com/Psy-Fer/poa-consensus
 //! 
@@ -90,7 +90,6 @@ impl Default for PoaConfig {
             gap_extend: -3,
             
             min_boundary_coverage: 0,
-
             alignment_mode: AlignmentMode::SemiGlobal,
         }
     }
@@ -109,7 +108,7 @@ type BaseByte  = u8;
 
 /// An out-edge and how many sequences traversed it (Match/Insert founding 
 /// traffic).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Edge {
     to: NodeIndex,
     weight: Weight,
@@ -758,22 +757,33 @@ impl Poa {
     }
 
     /// abPOA-style heaviest bundling: reverse pass computes, per node, the
-    /// heaviest out-edge (tie-broken by downstream cumulative weight); walk the
+    /// heaviest out-edge (tie-broken by giving preference to first recorded 
+    /// best out-edge from a node, i.e., to the scaffold sequence); walk the  
     /// chosen chain from a source. Return the consensus node path as indices.
     fn heaviest_path_nodes(&self) -> Vec<NodeIndex> {
         let (topo, _) = self.topo_order();
         let n_nodes = self.nodes.len();
         if n_nodes == 0 { return vec![]; }
-        let mut scores = vec![0_i64; n_nodes]; // scores can be negative
+        let mut scores = vec![0_i64; n_nodes]; 
         let mut next_node_indices = vec![NodeIndex::MAX; n_nodes];
         for &t in topo.iter().rev() {
             let mut best_weight: Weight = -1;
             let mut best_score = i64::MIN;
             let mut best_column = NodeIndex::MAX;
-            for edge in &self.nodes[t].out {
+            // the first out-edge for a scaffold node will be to the next scaffold node
+            for edge in &self.nodes[t].out { 
                 let score = scores[edge.to];
-                if edge.weight > best_weight || 
-                  (edge.weight == best_weight && score > best_score) {
+                // eprintln!("node {}, {} to {}, score {},  {:?}", 
+                //     t,
+                //     std::str::from_utf8(&[self.nodes[t].base]).unwrap(), 
+                //     std::str::from_utf8(&[self.nodes[edge.to].base]).unwrap(), 
+                //     score, 
+                //     edge
+                // );
+                // for a scaffold node, this loop triggers once for the scaffold-to-scaffold edge
+                // and won't trigger again unless scaffold-to-alt has a heavier weight
+                // TODO: consider bringing back score tie-breaker only at non-scaffold t nodes
+                if edge.weight > best_weight {
                     best_weight = edge.weight;
                     best_score  = score;
                     best_column = edge.to;
@@ -783,6 +793,7 @@ impl Poa {
                 scores[t] = best_weight as i64 + best_score;
                 next_node_indices[t] = best_column;
             }
+            // eprintln!("{} to {}, score {}", t, next_node_indices[t], scores[t]);
         }
         let mut start = topo[0];
         let mut best_score = i64::MIN;

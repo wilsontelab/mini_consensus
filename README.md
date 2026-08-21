@@ -1,9 +1,9 @@
 # mini-consensus
 
-A pure-Rust library for resolving consensus sequences from a set of DNA inputs
-where pairwise minimap2 alignments to a scaffold sequence identify identical 
-spans as anchors and banded partial order alignment (POA) resolves spans between 
-the anchors where the sequences differ.
+A pure-Rust library for resolving consensus sequences from a set of DNA inputs 
+where (i) pairwise minimap2 alignments to a scaffold sequence identify identical 
+spans as anchors, and (ii) banded partial order alignment (POA) resolves spans 
+between the anchors where the sequences differ.
 
 This crate imports 
 [rammap](https://github.com/jwanglab/rammap) 
@@ -20,19 +20,28 @@ other meanings in Rust and bioinformatics.
 ## Quick start
 
 ```toml
+# cargo.toml
 [dependencies]
 mini_consensus = "0.1"
 ```
 
 ```rust
-use mini_consensus::{Resolver, PoaConfig};
+use mini_consensus::*;
 
-let reads: Vec<&[u8]> = vec![
-    b"CATCATCAT",
+let ref = b"CATCATCAT"; // your sequences will be longer
+let seqs: Vec<&[u8]> = vec![
+    b"CATCATTCAT",
     b"CATCATCAT",
     b"CATCGTCAT",
     b"CATCATCAT",
 ];
+
+let mut resolver = Resolver::with_capacity(Preset::MapHifi, seqs.len(), 100, None);
+resolver.set_scaffold_with_aligner(ref);
+for seq in &seqs { resolver.add_seq(seq); }
+if let Some(consensus: Vec<u8>) = resolver.get_consensus() {
+    // use the consensus
+}
 ```
 
 ## Use cases
@@ -73,7 +82,7 @@ Initial sequence scanning uses a single scaffold sequence to which all other
 sequences are individually aligned. The choice of scaffold can influence the 
 consensus result at the outer boundaries and in high-error regions. Unlike 
 `poa_consensus`, `mini_consensus` does not select a POA seed or scaffold for you 
-due to the use cases is was built around. 
+due to the use cases it was built around. 
 
 Although `mini_consensus` does not depend on what your input sequences are, they 
 are typically long sequencing reads. The scaffold might be one of those reads 
@@ -87,21 +96,19 @@ Importantly, the scaffold sequence must be "end-to-end" over the entire expected
 output consensus. Any sequence portions that overhang the scaffold will be 
 trimmed. Also, if the very ends of the consensus are non-identical, the scaffold
 base values will be reported out to the first and last scaffold bases. Generally,
-this means that your calling code should execute consensus assembly across
-regions that are anchored at their boundaries.
+this means that calling code should execute consensus assembly across regions 
+that are anchored at their boundaries.
 
 In contrast, input sequences do not all need to be end-to-end over the expected
 consensus. Sequences only contribute to the portion of the consensus they overlap.
 
 ## Sequence orientation
 
-Unlike `poa_consensus`, `mini_consensus` does not auto-orient reads because:
-- `rammap` (minimap2) inherently orients reads during alignment to the scaffold
-- many other POA use cases can exploit previously oriented sequences
-
-Importantly, the minimap2-assisted consensus resolver will reverse-complement
-input sequences as needed to make them match the forward strand of the scaffold,
-with sequences passed in as mutable references.
+Consensuses are reported in the strand orientation of the scaffold. You do not
+need to pre-orient your sequences because `rammap` (minimap2) inherently orients 
+reads during alignment to the scaffold. If you use pre-existing BAM records,
+be sure they were aligned to a reference in the same orientation as your
+scaffold sequence.
 
 ## Other differences between `poa_consensus` and `mini_consensus`
 
@@ -109,10 +116,13 @@ The iterative POA calls made during anchor-assisted consensus resolution
 prompted minor implementation revisions around the core logic code taken from 
 `poa-consensus`. First, `mini_consensus::Poa` uses a single pre-built POA graph 
 engine with pre-allocated buffers that are iteratively reset with new sequences. 
-Also, `mini_consensus` resolves all graph branches using heaviest bundle logic.
+Also, `mini_consensus` resolves all graph branches using heaviest bundle logic,
+and breaks ties by giving preference to the path containing the scaffold 
+sequence.
 
 If these changes are useful to you for performing POA without minimap2 support, 
-you can access the `mini_consensus::Poa` module directly. 
+you can access the `mini_consensus::Poa` module directly, starting with 
+`let poa = mini_consensus::Poa::with_capacity(...)`.
 
 ## Licenses
 
