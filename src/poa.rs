@@ -3,8 +3,8 @@
 //! 
 //! https://github.com/Psy-Fer/poa-consensus
 //! 
-//! The open source license from the poa_consensus crate from August 2026 folows.
-//! All code in this create is subject to the same MIT license.
+//! The open source license from the poa_consensus crate from August 2026 
+//! follows. All code in this create is subject to the same MIT license.
 //! 
 //! MIT License
 //! 
@@ -99,6 +99,15 @@ impl Default for PoaConfig {
 Poa graph engine support
 ----------------------------------------------------------------------------- */
 const NEG_INF: i32 = i32::MIN / 4; // /4 so additions can't overflow
+
+// Declare the left and right clamps, i.e., artificial anchor sequences added to 
+// input sequence flanks. Clamping ensures that POA always resolves within the 
+// requested region. The POA algorithm enforces no expectations that bases are 
+// ACGTN or IUPAC values, so using non-IUPAC values EFJ and LPQ ensures that 
+// clamps only align to same-end clamps.
+const CLAMP_LEN: usize = 10;
+const LEFT_CLAMP:  &[u8; CLAMP_LEN] = b"EFFJFJJEFJ";
+const RIGHT_CLAMP: &[u8; CLAMP_LEN] = b"LPPQPQQLPQ";
 
 // data type aliases
 type NodeIndex = usize;
@@ -204,10 +213,10 @@ impl Poa {
     public caller functions needed to build a consensus, in usage order 
     ------------------------------------------------------------------------- */
     /// Create a new reusable Poa graph engine with the indicated sequence and 
-    /// sequence length capacity. The returned engine can be used for all consensus 
-    /// building that uses the same configuration parameters. Capacity will
-    /// grow and persist stably as needed if the number of sequences or their 
-    /// lengths exceed the values provided here.
+    /// sequence length capacity. The returned engine can be used for all  
+    /// consensus building that uses the same configuration parameters. Capacity 
+    /// will grow and persist stably as needed if the number of sequences or  
+    /// their lengths exceed the values provided here.
     pub fn with_capacity(
         cfg: PoaConfig,
         n_seqs:  usize,
@@ -250,9 +259,13 @@ impl Poa {
         self.seq_lens.clear();
         self.seq_paths.clear();
         self.seq_matched_edges.clear();
-        for (i, &b) in seed.iter().enumerate() {
+        let clamped_len = seed.len() + CLAMP_LEN * 2;
+        let clamped = LEFT_CLAMP.iter()
+            .chain(seed.iter())
+            .chain(RIGHT_CLAMP.iter());
+        for (i, &b) in clamped.enumerate() {
             let inc = if i == 0 { vec![] } else { vec![i - 1] };
-            let out = if i + 1 < seed.len() {
+            let out = if i + 1 < clamped_len {
                 vec![Edge {
                     to: i + 1,
                     weight: 1,
@@ -269,11 +282,11 @@ impl Poa {
                 del: 0,
             });
         }
-        let seed_path: Vec<usize> = (0..seed.len()).collect();
-        let seed_medges: Vec<(usize, usize)> = (0..seed.len().saturating_sub(1))
+        let seed_path: Vec<usize> = (0..clamped_len).collect();
+        let seed_medges: Vec<(usize, usize)> = (0..clamped_len.saturating_sub(1))
             .map(|i| (i, i + 1))
             .collect();
-        self.seq_lens.push(seed.len());
+        self.seq_lens.push(clamped_len);
         self.seq_paths.push(seed_path);
         self.seq_matched_edges.push(seed_medges);
         if let Some(band_width) = band_width{
@@ -311,13 +324,18 @@ impl Poa {
     /// strand orientation as the graph seed/scaffold for results to be 
     /// meaningful (see `Poa::reverse_complement()`).
     pub fn add_seq(&mut self, seq: &[BaseByte]) {
-        if seq.is_empty() { return; }
+        // if seq.is_empty() { return; }
         let (topo, rank_of) = self.topo_order();
-        let ops = self.align(seq, &topo, &rank_of);
-        let (path, medges) = self.integrate(seq, &ops);
+        let clamped: Vec<_> = LEFT_CLAMP.iter()
+            .chain(seq.iter())
+            .chain(RIGHT_CLAMP.iter())
+            .copied()
+            .collect();
+        let ops = self.align(&clamped, &topo, &rank_of);
+        let (path, medges) = self.integrate(&clamped, &ops);
         self.seq_paths.push(path);
         self.seq_matched_edges.push(medges);
-        self.seq_lens.push(seq.len());
+        self.seq_lens.push(clamped.len());
         self.n_seqs += 1;
     }
 
@@ -328,6 +346,20 @@ impl Poa {
             .iter()
             .map(|&nd| self.nodes[nd].base)
             .collect()
+    }
+
+    pub fn xxxx(&self){
+        let (topo, _) = self.topo_order();
+        println!("{:?}", topo);
+        for node_index in topo {
+            println!(
+                "{} {:?} {:?} {:?}", 
+                node_index, 
+                self.nodes[node_index].base as char,
+                self.nodes[node_index].aligned,
+                self.nodes[node_index].out,
+            );
+        }
     }
     /* -------------------------------------------------------------------------
     internal graph functions 
@@ -683,8 +715,8 @@ impl Poa {
     /// them (correct allele counting) instead of fragmenting into fresh nodes.
     fn aligned_or_new(&mut self, t: NodeIndex, base: BaseByte) -> NodeIndex {
         if self.nodes[t].base == base { return t; }
-        for &a in &self.nodes[t].aligned {
-            if self.nodes[a].base == base { return a; }
+        for &node_index in &self.nodes[t].aligned {
+            if self.nodes[node_index].base == base { return node_index; }
         }
         let base_node_index = self.new_node(base);
         let mut column = self.nodes[t].aligned.clone();
@@ -803,7 +835,7 @@ impl Poa {
                 start = t;
             }
         }
-        let mut path = Vec::with_capacity(self.base_capacity);
+        let mut clamped_path = Vec::with_capacity(self.base_capacity);
         let mut current = start;
         // `visited` is cycle-safety insurance: the graph is a DAG by construction
         // (topo_order debug-asserts it), so `next_node_indices` cannot cycle — 
@@ -813,9 +845,13 @@ impl Poa {
         let mut visited = vec![false; n_nodes];
         while current != NodeIndex::MAX && !visited[current] {
             visited[current] = true;
-            path.push(current);
+            clamped_path.push(current);
             current = next_node_indices[current];
         }
+
+        // remove the flanking clamps from consideration in the output
+        let unclamped_path = &clamped_path[CLAMP_LEN..clamped_path.len() - CLAMP_LEN];
+
         // Boundary trim: drop leading/trailing consensus nodes below
         // min_boundary_coverage. This removes low-coverage flanks and 
         // trailing/leading repeat-unit extensions supported by only a minority 
@@ -823,11 +859,11 @@ impl Poa {
         // repeat). abPOA/SPOA do the equivalent. Interior low-coverage (a 
         // genuine spanning-seqs gap) is preserved.
         let floor = self.cfg.min_boundary_coverage;
-        let s = path.iter().position( |&nd| self.nodes[nd].cov >= floor);
-        let e = path.iter().rposition(|&nd| self.nodes[nd].cov >= floor);
+        let s = unclamped_path.iter().position( |&nd| self.nodes[nd].cov >= floor);
+        let e = unclamped_path.iter().rposition(|&nd| self.nodes[nd].cov >= floor);
         match (s, e) {
-            (Some(s), Some(e)) if s <= e => path[s..=e].to_vec(),
-            _ => path,
+            (Some(s), Some(e)) if s <= e => unclamped_path[s..=e].to_vec(),
+            _ => unclamped_path.to_vec()
         }
     }
 }

@@ -18,8 +18,9 @@ name = "mini_consensus"
 path = "src/lib.rs"
 
 [dependencies]
+rustc-hash = "2.1.0"
 # published as `rammap-core` but imported in code as `rammap`
 rammap-core = { version = "1.1", default-features = false, features = ["parallel"] }
-rustc-hash = "2.1.0"
+noodles = { version = "0.116", features = ["sam", "bam"] }
 
 rand = "0.8"
