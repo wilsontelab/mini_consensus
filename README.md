@@ -22,7 +22,7 @@ other meanings in Rust and bioinformatics.
 ```toml
 # cargo.toml
 [dependencies]
-mini_consensus = { git = "https://github.com/wilsontelab/mini_consensus", branch = "main" }
+mini-consensus = { git = "https://github.com/wilsontelab/mini_consensus", branch = "main" }
 ```
 
 ```rust
