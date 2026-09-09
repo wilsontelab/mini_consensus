@@ -1,31 +1,36 @@
-//! A pure-Rust library for resolving consensus sequences from a set of DNA inputs 
-//! where (i) pairwise minimap2 alignments to a scaffold sequence identify identical 
-//! spans as anchors, and (ii) banded partial order alignment (POA) resolves spans 
-//! between the anchors where the sequences differ.
+// A pure-Rust library for resolving consensus sequences from a set of DNA inputs 
+// where (i) sequence alignments to a scaffold sequence identify identical spans as 
+// anchors, and (ii) banded partial order alignment (POA) resolves spans between 
+// the anchors where the sequences differ.
 //! 
 //! ```toml
 //! # cargo.toml
 //! [dependencies]
-//! mini_consensus = "0.1"
+//! mini_consensus = { git = "https://github.com/wilsontelab/mini_consensus", branch = "main" }
 //! ```
 //! 
 //! ```rust
 //! use mini_consensus::*;
 //! 
-//! let ref = b"CATCATCAT"; // your sequences will be longer
+//! // your sequences will be longer
+//! let scaffold = b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA"; 
 //! let seqs: Vec<&[u8]> = vec![
-//!     b"CATCATTCAT",
-//!     b"CATCATCAT",
-//!     b"CATCGTCAT",
-//!     b"CATCATCAT",
+//!     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA",
+//!     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCCTCCACACCCAACATTGAAGACTGATGTA",
 //! ];
-//! 
-//! let mut resolver = Resolver::with_capacity(Preset::MapHifi, seqs.len(), 100, None);
-//! resolver.set_scaffold_with_aligner(ref);
-//! for seq in &seqs { resolver.add_seq(seq); }
-//! if let Some(consensus: Vec<u8>) = resolver.get_consensus() {
-//!     // use the consensus
+//! let mut resolver = Resolver::with_capacity(
+//!     ResolverConfig::default(),
+//!     seqs.len(), 
+//!     scaffold.len() * 2
+//! );
+//! resolver.set_scaffold_with_aligner(scaffold);
+//! for seq in &seqs { 
+//!     resolver.add_seq(seq);
 //! }
+//! if let Some(consensus) = resolver.get_consensus() {
+//!     // use the consensus, which is Vec<u8>
+//! }
+//! // use the resolver iteratively with new scaffold and seqs
 //! ```
 
 // modules

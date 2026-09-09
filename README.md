@@ -22,36 +22,31 @@ other meanings in Rust and bioinformatics.
 ```toml
 # cargo.toml
 [dependencies]
-mini_consensus = "0.1"
+mini_consensus = { git = "https://github.com/wilsontelab/mini_consensus", branch = "main" }
 ```
 
 ```rust
 use mini_consensus::*;
 
-let scaffold = b"CATCATCAT"; // your sequences will be longer
+// your sequences will be longer
+let scaffold = b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA"; 
 let seqs: Vec<&[u8]> = vec![
-    b"CATCATTCAT",
-    b"CATCATCAT",
-    b"CATCGTCAT",
-    b"CATCATCAT",
+    b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA",
+    b"GAAATAAGAACCGGCAAATCCTACACTAATCCCCTCCACACCCAACATTGAAGACTGATGTA",
 ];
-
 let mut resolver = Resolver::with_capacity(
     ResolverConfig::default(),
     seqs.len(), 
     scaffold.len() * 2
 );
-
 resolver.set_scaffold_with_aligner(scaffold);
-
-let use_clipped_bases = true;
 for seq in &seqs { 
-    resolver.add_seq(seq, use_clipped_bases); 
+    resolver.add_seq(seq);
 }
-
 if let Some(consensus) = resolver.get_consensus() {
     // use the consensus, which is Vec<u8>
 }
+// use the resolver iteratively with new scaffold and seqs
 ```
 
 ## Use cases
@@ -224,6 +219,8 @@ sequence counts, and random variant densities and measured the elapsed time and
 frequency of consensuses that matched expectations above. Results are tabulated 
 below (times include random sequence generation but this is fast relative to 
 consensus resolution).
+
+PENDING (most cases are sub-second resolution of long-read consensuses)
 
 ## Other differences between `poa_consensus` and `mini_consensus`
 
