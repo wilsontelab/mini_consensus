@@ -25,7 +25,7 @@
 //! );
 //! resolver.set_scaffold_with_aligner(scaffold);
 //! for seq in &seqs { 
-//!     resolver.add_seq(seq);
+//!     resolver.add_seq(seq, |_mapping| true); // or validate mapping as needed
 //! }
 //! if let Some(consensus) = resolver.get_consensus() {
 //!     // use the consensus, which is Vec<u8>

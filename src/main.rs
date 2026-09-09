@@ -47,8 +47,8 @@ fn debug_resolver(){
         500
     );
     resolver.set_scaffold_with_aligner(ref0);
-    resolver.add_seq(seq0).expect("failed to add seq0");
-    resolver.add_seq(seq1).expect("failed to add seq1");
+    resolver.add_seq(seq0, |_| true).expect("failed to add seq0");
+    resolver.add_seq(seq1, |_| true).expect("failed to add seq1");
     // resolver.add_seq(seq2).expect("failed to add seq2");
     // resolver.add_seq(seq3).expect("failed to add seq3");
     // resolver.add_seq(seq4).expect("failed to add seq4");
@@ -137,7 +137,7 @@ fn run_iterations(
             ));
         }
         resolver.set_scaffold_with_aligner(&scaffold);
-        for seq in &seqs { resolver.add_seq(seq); } //.expect("SEQ ERROR")
+        for seq in &seqs { resolver.add_seq(seq, |_| true); } //.expect("SEQ ERROR")
         let consensus = resolver.get_consensus().unwrap_or_else(|| Vec::new());
         if consensus == expected {
             n_expected += 1;

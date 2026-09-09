@@ -2,7 +2,7 @@
 //! sequences are aligned to the scaffold by this crate using minimap2.
 
 // imports
-use rammap::{Strand, CigarOp};
+use rammap::{Strand, CigarOp, Mapping};
 use super::*;
 
 // constants
@@ -18,10 +18,16 @@ impl Resolver {
     /// scaffold. Like scaffolds, sequences are coerced to uppercase ACGTN 
     /// upstream of further analysis. Sequences are reverse-complemented 
     /// internally to match the scaffold as needed.
-    pub fn add_seq(
+    /// 
+    /// The `validate` closure allows callers to apply custom methods to accept
+    /// or reject the sequence alignment to scaffold before it is added.
+    pub fn add_seq<V>(
         &mut self,
         seq: &[BaseByte],
-    ) -> Option<()> {
+        validate: V,
+    ) -> Option<()> 
+    where V: Fn(&Mapping) -> bool
+    {
 
         // create an owned copy of seq
         let seq0 = self.add_sequence(seq.iter().copied());
@@ -39,6 +45,7 @@ impl Resolver {
         if map_result.mappings.len() > 1 &&
            map_result.mappings[1].is_primary { return None; }
         let mapping = &map_result.mappings[0];
+        if !validate(mapping) { return None; }
         let Some(cigar_ops) = &mapping.cigar_ops else { return None };
 
         // determine the starting alignment position on scaffold and sequencee
