@@ -2,6 +2,7 @@
 //! sequences are aligned to the scaffold by this crate using minimap2.
 
 // imports
+use thiserror::Error;
 use rammap::{Strand, CigarOp, Mapping};
 use super::*;
 
@@ -11,6 +12,19 @@ const MATCH:     u8 = 7;
 const MISMATCH:  u8 = 8;
 const INSERTION: u8 = 1;
 const DELETION:  u8 = 2;
+
+/// Errors encountered while aligning a requested sequence to the scaffold.
+#[derive(Error, Debug)]
+pub enum AddSeqError {
+    #[error("sequence did not align to the scaffold")]
+    NoAlignment,
+    #[error("sequence had more than one primary alignment to the scaffold")]
+    MultiPrimaryAlignments,
+    #[error("sequence mapping failed caller-provided validation")]
+    FailedValidation,
+    #[error("sequence mapping unexpectedly failed to yield CigarOps")]
+    MissingCigarOps,
+}
 
 impl Resolver {
 
@@ -25,7 +39,7 @@ impl Resolver {
         &mut self,
         seq: &[BaseByte],
         validate: V,
-    ) -> Option<()> 
+    ) -> Result<(), AddSeqError> 
     where V: Fn(&Mapping) -> bool
     {
 
@@ -41,12 +55,12 @@ impl Resolver {
 
         // check mapping validity
         // expect exactly one primary alignment span per input sequence
-        if map_result.mappings.len() == 0 { return None; }
+        if map_result.mappings.len() == 0 { return Err(AddSeqError::NoAlignment) }
         if map_result.mappings.len() > 1 &&
-           map_result.mappings[1].is_primary { return None; }
+           map_result.mappings[1].is_primary { return Err(AddSeqError::MultiPrimaryAlignments) }
         let mapping = &map_result.mappings[0];
-        if !validate(mapping) { return None; }
-        let Some(cigar_ops) = &mapping.cigar_ops else { return None };
+        if !validate(mapping) { return Err(AddSeqError::FailedValidation) }
+        let Some(cigar_ops) = &mapping.cigar_ops else { return Err(AddSeqError::MissingCigarOps) };
 
         // determine the starting alignment position on scaffold and sequencee
         // as needed, reverse complement seq to scaffold orientation
@@ -83,7 +97,7 @@ impl Resolver {
         self.fill_right_clip(seq0);
         
         // return success
-        Some(())
+        Ok(())
     }
 
     /// Process a single eqx CIGAR operation to build a scaffold map. Only 

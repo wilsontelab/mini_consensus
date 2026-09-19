@@ -8,6 +8,7 @@ mod add_seq;
 
 // imports
 use rammap::{Aligner, Preset};
+// use noodles::bam::{Record as BamRecord};
 use crate::poa::{PoaConfig, AlignmentMode, Poa};
 
 // data type aliases
@@ -209,7 +210,7 @@ impl Resolver {
     /// are different at a position.
     pub fn get_consensus(
         &mut self,
-    ) -> Option<Vec<BaseByte>> {
+    ) -> Vec<BaseByte> {
         let mut chunk_pos0:  usize = 0; // leftmost pos0 of the next encountered chunk in scaffold coordinates
         let mut left_start0: usize = 0; // leftmost pos0 of the uncommitted match span left of POA span
         let mut left_end1:   usize = 0; // righmost pos1 of the uncommitted match span left of POA span
@@ -275,7 +276,7 @@ impl Resolver {
         }
 
         // return our result
-        Some(consensus)
+        consensus
     }
     /* -------------------------------------------------------------------------
     Resolver - internal function called by get_consensus
@@ -483,4 +484,10 @@ impl Resolver {
         // }
     }
 
+    // /// Return the QNAME for a BamRecord.
+    // fn get_qname(aln: BamRecord) -> String {
+    //     let Some(qname) = aln.name() else { return "unkown".to_string() };
+    //     let Ok(qname) = std::str::from_utf8(qname) else { return "unkown".to_string() };
+    //     qname.to_string()
+    // }
 }

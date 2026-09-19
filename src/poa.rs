@@ -348,7 +348,8 @@ impl Poa {
             .collect()
     }
 
-    pub fn xxxx(&self){
+    /// Debug support.
+    pub fn show_topo(&self){
         let (topo, _) = self.topo_order();
         println!("{:?}", topo);
         for node_index in topo {
