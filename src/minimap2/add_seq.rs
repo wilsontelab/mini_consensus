@@ -55,12 +55,12 @@ impl Resolver {
 
         // check mapping validity
         // expect exactly one primary alignment span per input sequence
-        if map_result.mappings.len() == 0 { return Err(AddSeqError::NoAlignment) }
+        if map_result.mappings.len() == 0 { return self.abort_seq(AddSeqError::NoAlignment) }
         if map_result.mappings.len() > 1 &&
-           map_result.mappings[1].is_primary { return Err(AddSeqError::MultiPrimaryAlignments) }
+           map_result.mappings[1].is_primary { return self.abort_seq(AddSeqError::MultiPrimaryAlignments) }
         let mapping = &map_result.mappings[0];
-        if !validate(mapping) { return Err(AddSeqError::FailedValidation) }
-        let Some(cigar_ops) = &mapping.cigar_ops else { return Err(AddSeqError::MissingCigarOps) };
+        if !validate(mapping) { return self.abort_seq(AddSeqError::FailedValidation) }
+        let Some(cigar_ops) = &mapping.cigar_ops else { return self.abort_seq(AddSeqError::MissingCigarOps) };
 
         // determine the starting alignment position on scaffold and sequencee
         // as needed, reverse complement seq to scaffold orientation
@@ -98,6 +98,15 @@ impl Resolver {
         
         // return success
         Ok(())
+    }
+
+    /// Return the appropriate error state for a failed sequence addition after
+    /// removing the sequence from the buffer. Note that `seq_map` has not yet
+    /// been extended, and the scaffold arrays remain as is while awaiting the
+    /// next sequence.
+    fn abort_seq(&mut self, error: AddSeqError) -> Result<(), AddSeqError> {
+        self.seqs.pop();
+        Err(error)
     }
 
     /// Process a single eqx CIGAR operation to build a scaffold map. Only 
