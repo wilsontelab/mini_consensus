@@ -104,19 +104,21 @@ impl Resolver {
 
     /// Check which of a list of sequences are a productive alignment to the 
     /// scaffold. Expect exactly one primary alignment span per input sequence.
-    pub fn par_check_seqs<D, V>(
+    pub fn par_check_seqs<BBS, BB, V>(
         &self,
-        seqs: &[&[BaseByte]],
+        seqs: BBS,
         validate: V,
     ) -> Vec<bool> 
-    where D: AsRef<[BaseByte]> + Send + Sync,
-          V: Fn(&Mapping) -> bool + Send + Sync
+    where
+        BBS: AsRef<[BB]> + Send + Sync,
+        BB:  AsRef<[BaseByte]> + Send + Sync,
+        V: Fn(&Mapping) -> bool + Send + Sync,
     {
         let aligner = self.aligner.as_ref().expect(
             "Must call `set_scaffold_with_aligner()` before calling `add_seq()`."
         );
-        seqs.par_iter().map(|&seq|{
-            let map_result = &aligner.map_seq("seq", seq);
+        seqs.as_ref().par_iter().map(|seq|{
+            let map_result = &aligner.map_seq("seq", seq.as_ref());
             if map_result.mappings.len() == 0 { return false }
             if map_result.mappings.len() > 1 &&
                map_result.mappings[1].is_primary { return false }
