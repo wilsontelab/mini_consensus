@@ -104,12 +104,13 @@ impl Resolver {
 
     /// Check which of a list of sequences are a productive alignment to the 
     /// scaffold. Expect exactly one primary alignment span per input sequence.
-    pub fn par_check_seqs<V>(
+    pub fn par_check_seqs<D, V>(
         &self,
         seqs: &[&[BaseByte]],
         validate: V,
     ) -> Vec<bool> 
-    where V: Fn(&Mapping) -> bool + Send + Sync
+    where D: AsRef<[BaseByte]> + Send + Sync,
+          V: Fn(&Mapping) -> bool + Send + Sync
     {
         let aligner = self.aligner.as_ref().expect(
             "Must call `set_scaffold_with_aligner()` before calling `add_seq()`."
