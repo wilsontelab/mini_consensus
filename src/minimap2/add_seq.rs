@@ -54,12 +54,12 @@ impl Resolver {
 
         // check mapping validity
         // expect exactly one primary alignment span per input sequence
-        if map_result.mappings.len() == 0 { return self.abort_seq(AddSeqError::NoAlignment) }
+        if map_result.mappings.len() == 0 { return self.abort_add_seq(AddSeqError::NoAlignment) }
         if map_result.mappings.len() > 1 &&
-           map_result.mappings[1].is_primary { return self.abort_seq(AddSeqError::MultiPrimaryAlignments) }
+           map_result.mappings[1].is_primary { return self.abort_add_seq(AddSeqError::MultiPrimaryAlignments) }
         let mapping = &map_result.mappings[0];
-        if !validate(mapping) { return self.abort_seq(AddSeqError::FailedValidation) }
-        let Some(cigar_ops) = &mapping.cigar_ops else { return self.abort_seq(AddSeqError::MissingCigarOps) };
+        let Some(cigar_ops) = &mapping.cigar_ops else { return self.abort_add_seq(AddSeqError::MissingCigarOps) };
+        if !validate(mapping) { return self.abort_add_seq(AddSeqError::FailedValidation) }
 
         // determine the starting alignment position on scaffold and sequencee
         // as needed, reverse complement seq to scaffold orientation
@@ -102,11 +102,33 @@ impl Resolver {
         Ok(())
     }
 
+    /// Check which of a list of sequences are a productive alignment to the 
+    /// scaffold. Expect exactly one primary alignment span per input sequence.
+    pub fn par_check_seqs<V>(
+        &self,
+        seqs: &[&[BaseByte]],
+        validate: V,
+    ) -> Vec<bool> 
+    where V: Fn(&Mapping) -> bool + Send + Sync
+    {
+        let aligner = self.aligner.as_ref().expect(
+            "Must call `set_scaffold_with_aligner()` before calling `add_seq()`."
+        );
+        seqs.par_iter().map(|&seq|{
+            let map_result = &aligner.map_seq("seq", seq);
+            if map_result.mappings.len() == 0 { return false }
+            if map_result.mappings.len() > 1 &&
+               map_result.mappings[1].is_primary { return false }
+            let mapping = &map_result.mappings[0];
+            mapping.cigar_ops.is_some() && validate(mapping)
+        }).collect()
+    }
+
     /// Return the appropriate error state for a failed sequence addition after
     /// removing the sequence from the buffer. Note that `seq_map` has not yet
     /// been extended, and the scaffold arrays remain as is while awaiting the
     /// next sequence.
-    fn abort_seq(&mut self, error: AddSeqError) -> Result<(), AddSeqError> {
+    fn abort_add_seq(&mut self, error: AddSeqError) -> Result<(), AddSeqError> {
         self.seqs.pop();
         Err(error)
     }
