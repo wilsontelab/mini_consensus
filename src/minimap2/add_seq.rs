@@ -102,29 +102,25 @@ impl Resolver {
         Ok(())
     }
 
-    /// Check which of a list of sequences are a productive alignment to the 
-    /// scaffold. Expect exactly one primary alignment span per input sequence.
-    pub fn par_check_seqs<BBS, BB, V>(
+    /// Check whether a sequence is a productive alignment to the scaffold. 
+    /// Expect exactly one primary alignment span per input sequence. This 
+    /// function does not add the sequence to the resolver.
+    pub fn check_seq<V>(
         &self,
-        seqs: BBS,
+        seq: &[BaseByte],
         validate: V,
-    ) -> Vec<bool> 
-    where
-        BBS: AsRef<[BB]> + Send + Sync,
-        BB:  AsRef<[BaseByte]> + Send + Sync,
-        V: Fn(&Mapping) -> bool + Send + Sync,
+    ) -> bool
+    where V: Fn(&Mapping) -> bool,
     {
         let aligner = self.aligner.as_ref().expect(
-            "Must call `set_scaffold_with_aligner()` before calling `add_seq()`."
+            "Must call `set_scaffold_with_aligner()` before calling `check_seq()`."
         );
-        seqs.as_ref().par_iter().map(|seq|{
-            let map_result = &aligner.map_seq("seq", seq.as_ref());
-            if map_result.mappings.len() == 0 { return false }
-            if map_result.mappings.len() > 1 &&
-               map_result.mappings[1].is_primary { return false }
-            let mapping = &map_result.mappings[0];
-            mapping.cigar_ops.is_some() && validate(mapping)
-        }).collect()
+        let map_result = &aligner.map_seq("seq", seq);
+        if map_result.mappings.len() == 0 { return false }
+        if map_result.mappings.len() > 1 &&
+            map_result.mappings[1].is_primary { return false }
+        let mapping = &map_result.mappings[0];
+        mapping.cigar_ops.is_some() && validate(mapping)
     }
 
     /// Return the appropriate error state for a failed sequence addition after
