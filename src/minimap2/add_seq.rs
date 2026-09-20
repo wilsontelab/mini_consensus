@@ -42,7 +42,6 @@ impl Resolver {
     ) -> Result<(), AddSeqError> 
     where V: Fn(&Mapping) -> bool
     {
-
         // create an owned copy of seq
         let seq0 = self.add_sequence(seq.iter().copied());
         let seq_mut = &mut self.seqs[seq0];
@@ -64,6 +63,9 @@ impl Resolver {
 
         // determine the starting alignment position on scaffold and sequencee
         // as needed, reverse complement seq to scaffold orientation
+        for coverage in &mut self.coverage[mapping.target_start..mapping.target_end]{
+            coverage.n_seqs += 1;
+        }
         self.scaffold_pos0 = mapping.target_start;
         self.seq_pos0 = if mapping.strand == Strand::Reverse {
             for base in seq_mut.iter_mut() {
@@ -120,6 +122,9 @@ impl Resolver {
                 let mut seq_pos = self.seq_pos0..self.seq_pos0 + op_len;
                 self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
                     .fill_with(|| seq_pos.next());
+                for coverage in &mut self.coverage[self.scaffold_pos0..self.scaffold_pos0 + op_len] { 
+                    coverage.n_identical += 1; 
+                }
                 self.scaffold_pos0 += op_len;
                 self.seq_pos0      += op_len;
             },
@@ -128,7 +133,6 @@ impl Resolver {
                 // rrrrRrrrr
                 // qqqqQqqqq
                 //     A
-                self.is_identical[self.scaffold_pos0..self.scaffold_pos0 + op_len].fill(false);
                 let mut seq_pos = self.seq_pos0..self.seq_pos0 + op_len;
                 self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
                     .fill_with(|| seq_pos.next());
@@ -140,7 +144,9 @@ impl Resolver {
                 // rrrr   Rrrr
                 // qqqqQqqqqqq
                 //    aA Aa
-                self.is_identical[self.scaffold_pos0 - 1..=self.scaffold_pos0].fill(false); // force both flanking bases to POA
+                for coverage in &mut self.coverage[self.scaffold_pos0 - 1..=self.scaffold_pos0] { 
+                    coverage.n_identical = coverage.n_identical.saturating_sub(1); 
+                }
                 self.seq_pos0 += op_len;
             },
             DELETION => {
@@ -148,7 +154,6 @@ impl Resolver {
                 // rrrrRrrrrrr
                 // qqqq   Qqqq
                 //   aA   Aa
-                self.is_identical[self.scaffold_pos0..self.scaffold_pos0 + op_len].fill(false);
                 self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
                     .fill(Some(self.seq_pos0 - 1));
                 self.scaffold_pos0 += op_len;

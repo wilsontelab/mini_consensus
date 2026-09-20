@@ -29,6 +29,36 @@
 // SOFTWARE.
 
 /* -----------------------------------------------------------------------------
+PoaPool - a set of Poa engines to support assembly parallelization
+----------------------------------------------------------------------------- */
+/// A `PoaPool` establishes a set of Poa engine for use during parallelization.
+pub struct PoaPool {
+    pub poas: Vec<Poa>
+}
+impl PoaPool {
+    /// Create a set of new reusable Poa graph engines with the indicated 
+    /// sequence, sequence length, and engine capacity. 
+    pub fn with_capacity(
+        cfg: PoaConfig,
+        n_seqs:  usize,
+        n_bases: usize,
+        n_poa:   usize,
+    ) -> Self {
+        PoaPool{
+            poas: vec![Poa::with_capacity(cfg, n_seqs, n_bases); n_poa]
+        }
+    }
+    /// Fill a `PoaPool` to at least the requested number of Poa engines. The
+    /// vector of engines is not truncated, thus preserving prior capacity if
+    /// more than enough engines already exist.
+    pub fn fill_to(&mut self, n_poa: usize){
+        if self.poas.len() < n_poa {
+            self.poas.resize(n_poa, self.poas[0].clone());          
+        }
+    }
+}
+
+/* -----------------------------------------------------------------------------
 PoaConfig
 ----------------------------------------------------------------------------- */
 /// POA alignment modes. Global always extends to the boundaries.
@@ -125,6 +155,7 @@ struct Edge {
 
 /// A single-base node in the graph and metadata of out-edges, precedessor
 /// nodes, and coverage.
+#[derive(Clone)]
 struct Node {
     base:    u8,
     out:     Vec<Edge>,
@@ -182,6 +213,7 @@ Poa graph engine
 ///  - populated with additional sequences using `poa.add_seq()`,
 ///  - executed to consensus using `poa.get_heaviest_path()`, and 
 ///  - used iteratively beginning again with `poa.seed_new_graph()`.
+#[derive(Clone)]
 pub struct Poa {
     cfg: PoaConfig,
     base_capacity: usize, // used for instantiating Vecs, provided via with_capacity()

@@ -107,7 +107,7 @@ fn run_iterations(
     has_clonal_variants: bool,
     rng: &mut ThreadRng,
 ){
-    let mut resolver = Resolver::with_capacity(
+    let (mut resolver, mut poa_pool) = Resolver::with_capacity(
         ResolverConfig {
             is_end_to_end: true,
             ..ResolverConfig::default()
@@ -136,14 +136,17 @@ fn run_iterations(
                 rng,
             ));
         }
+        // eprintln!("scaffold");
         resolver.set_scaffold_with_aligner(&scaffold);
+        // eprintln!("seqs");
         for seq in &seqs { 
             match resolver.add_seq(seq, |_| true) {
                 Ok(_) => {},
                 Err(e) => eprintln!("{:?}", e)
             }
         }
-        let consensus = resolver.get_consensus();
+        // eprintln!("consensus");
+        let consensus = resolver.get_consensus(&mut poa_pool);
         if consensus == expected {
             n_expected += 1;
         } else {

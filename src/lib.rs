@@ -18,7 +18,7 @@
 //!     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA",
 //!     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCCTCCACACCCAACATTGAAGACTGATGTA",
 //! ];
-//! let mut resolver = Resolver::with_capacity(
+//! let (mut resolver, mut poa_pool) = Resolver::with_capacity(
 //!     ResolverConfig::default(),
 //!     seqs.len(), 
 //!     scaffold.len() * 2
@@ -30,7 +30,7 @@
 //!         Err(e) => eprintln!("{:?}", e)
 //!     }
 //! }
-//! let consensus = resolver.get_consensus();
+//! let consensus = resolver.get_consensus(&mut poa_pool);
 //! // use the resolver iteratively with new scaffold and seqs
 //! ```
 

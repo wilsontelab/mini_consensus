@@ -1,5 +1,8 @@
 # mini-consensus
 
+> **NOTICE**: This crate is under active final development and the interface may 
+> change without further notice until we create a first versioned release.
+
 A pure-Rust library for resolving consensus sequences from a set of DNA inputs 
 where (i) sequence alignments to a scaffold sequence identify identical spans as 
 anchors, and (ii) banded partial order alignment (POA) resolves spans between 
@@ -34,7 +37,7 @@ let seqs: Vec<&[u8]> = vec![
     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA",
     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCCTCCACACCCAACATTGAAGACTGATGTA",
 ];
-let mut resolver = Resolver::with_capacity(
+let (mut resolver, mut poa_pool) = Resolver::with_capacity(
     ResolverConfig::default(),
     seqs.len(), 
     scaffold.len() * 2
@@ -46,7 +49,7 @@ for seq in &seqs {
         Err(e) => eprintln!("{:?}", e)
     }
 }
-let consensus = resolver.get_consensus();
+let consensus = resolver.get_consensus(&mut poa_pool);
 // use the resolver iteratively with new scaffold and seqs
 ```
 
@@ -60,7 +63,7 @@ are extending it to the others.
 - extended reference-assisted whole-genome assembly
 - de novo assembly
 
-## Scaffold-assisted iterative local POA
+## Scaffold-assisted, parallelized local POA
 
 POA aligns DNA sequences into a directed acyclic graph (DAG) using affine-gap 
 dynamic programming and extracts a consensus by following the heaviest 
@@ -68,7 +71,7 @@ dynamic programming and extracts a consensus by following the heaviest
 resolved by all sequences together, which reduces consensus errors in regions 
 with clustered differences that occur when building a consensus by sequential
 pairwise alignment. However, POA slows considerably as sequence length grows. 
-`mini_consensus` uses two strategies to keep it small and fast. 
+`mini_consensus` uses several strategies to keep it small and fast. 
 
 First, code adapted from `poa_consensus` supports **adaptively banded POA** that 
 only computes part of the POA matrix for input sequences that are mostly 
@@ -76,7 +79,7 @@ co-linear with only small insertions and deletions.
 
 More importantly, `mini_consensus` uses `minimap2` to 
 **align each input sequence to a scaffold sequence to identify anchor spans**
-where all sequences are identical. Anchor spans are committed as is, which 
+where most sequences match the scaffold. Anchor spans are committed as is, which 
 **restricts POA to small local spans** between the anchors to yield a fast and 
 accurate consensus. 
 
@@ -88,6 +91,13 @@ scaffold   =======AG================T =======
 method     ==PPPPPPPPPPPP======PPPPPPPPPPPP==  '=' committed as is, 'P' subjected to POA
 consensus  =======GA================T =======
 ```
+
+Finally, the Rust
+[rayon](https://docs.rs/rayon/latest/rayon/) 
+crate is automatically used to build the consensus in parallel over the various
+interspersed anchor and POA chunks of the initial scaffold maps, i.e., POA
+calls can often run concurrently before stitching together the full consensus.
+This is the origin of the `poa_pool` obect in the code examples.
 
 ## Relationship between scaffold and other sequences
 
@@ -103,27 +113,16 @@ your application.
 
 Although `mini_consensus` does not depend on what your input sequences are, they 
 are typically long HiFi sequencing reads. The scaffold might be one of those  
-reads chosen to be representative, e.g., `poa_consensus` recommends the median  
-length read. Alternatively, you may choose to use an external reference sequence  
-as scaffold, noting that by design 
+reads chosen to be representative. Alternatively, you may choose to use an 
+external reference sequence as scaffold, noting that by design 
 **scaffold base values are reported when all input sequences have a different value**, 
 e.g., during three-strand error correction.
-
-### Sequences can be unaligned or pre-aligned to scaffold
-
-If you already aligned your sequences to the scaffold (e.g., reads to a  
-reference genome), the resolver can work from your existing `minimap2` BAM 
-records with `cs:Z:` tags using `resolver.add_aln()`, otherwise it can align 
-reads to the scaffold for you using `resolver.add_seq()`.
 
 ### Sequence orientation
 
 **Consensuses are reported in the strand orientation of the scaffold**. You do 
-not need to pre-orient unaligned sequences because `rammap` (minimap2) 
-inherently orients reads during alignment to the scaffold. If you use 
-pre-existing BAM records, be sure they were aligned to a reference in the same 
-orientation as your scaffold sequence so that the `cs:Z:` tags are already in 
-scaffold orientation.
+not need to pre-orient sequences because `rammap` (minimap2) inherently orients 
+reads during alignment to the scaffold. 
 
 ## Usage mode #1 - end-to-end sequences over scaffold
 
@@ -218,10 +217,11 @@ a model for clonal variants that should be found in the consensus.
 We performed these tests for 1K iterations at a range of scaffold sizes, 
 sequence counts, and random variant densities and measured the elapsed time and 
 frequency of consensuses that matched expectations above. Results are tabulated 
-below (times include random sequence generation but this is fast relative to 
+below (times include random sequence generation but that is fast relative to 
 consensus resolution).
 
-PENDING (most cases are sub-second resolution of long-read consensuses)
+PENDING (most cases yield sub-second resolution of long-read consensuses, often
+less than 100 milliseconds)
 
 ## Other differences between `poa_consensus` and `mini_consensus`
 

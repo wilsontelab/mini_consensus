@@ -3,13 +3,12 @@
 //! sequences and anchored POA to resolve conflicts in the interval regions.
 
 // modules
-mod add_aln;
 mod add_seq;
 
 // imports
+use rayon::prelude::*;
 use rammap::{Aligner, Preset};
-// use noodles::bam::{Record as BamRecord};
-use crate::poa::{PoaConfig, AlignmentMode, Poa};
+use crate::poa::{PoaConfig, AlignmentMode, Poa, PoaPool};
 
 // data type aliases
 type BaseByte  = u8;
@@ -91,6 +90,13 @@ impl ReferenceSpan {
     }
 }
 
+/// Coverage and identity counts for sequences on scaffold positions.
+#[derive(Clone, Copy)]
+pub struct Coverage {
+    n_seqs: u16,
+    n_identical: u16,
+}
+
 /* -----------------------------------------------------------------------------
 Resolver - scaffolded multiple sequence alignment and consensus
 ----------------------------------------------------------------------------- */
@@ -99,18 +105,16 @@ pub struct Resolver {
     // Fields set per resolver by `with_capacity()`.
     cfg: ResolverConfig,
     base_capacity: usize,
-    poa: Poa,
 
     // Fields set per scaffold by `set_scaffold[_with_aligner]()`.
     scaffold: Vec<BaseByte>,
     scaffold_span: ReferenceSpan,
     scaffold_len: usize,
-    is_identical: Vec<bool>, // map of scaffold whether all seqs are identical at this position
+    coverage: Vec<Coverage>, // map of which seqs are identical at this position
     aligner: Option<Aligner>,
 
-    // Sequence Vecs filled per scaffold by `add_seq()` or `add_aln()`. `seqs`
-    // are cleared and re-instantiated per scaffold, `seq_maps` are re-used in 
-    // place.
+    // Sequence Vecs filled per scaffold by `add_seq()`. `seqs` are cleared and 
+    // re-instantiated per scaffold, `seq_maps` are re-used in place.
     seqs: Vec<Vec<BaseByte>>,
     seq_maps: Vec<Vec<Option<SeqPos0>>>, // outer=seq, inner=scaffold SeqPos0, value=seq SeqPos0
 
@@ -132,7 +136,7 @@ impl Resolver {
         cfg: ResolverConfig,
         n_seqs:  usize,
         n_bases: usize,
-    ) -> Self {
+    ) -> (Self, PoaPool) {
         let poa_config: PoaConfig = PoaConfig {
             band_width: 0, // instead, we update band_width based on seq len differences below
             adaptive_band: false,
@@ -140,20 +144,23 @@ impl Resolver {
             ..PoaConfig::default()
         };
         let seq_map = Vec::with_capacity(n_bases);
-        Self {
-            cfg,
-            base_capacity: n_bases,
-            poa: Poa::with_capacity(poa_config, n_seqs, 500),
-            scaffold:     Vec::with_capacity(n_bases),
-            scaffold_span: ReferenceSpan::default(),
-            scaffold_len: 0,
-            is_identical: Vec::with_capacity(n_bases),
-            aligner: None,
-            seqs:         Vec::with_capacity(n_seqs), // `seqs` is cleared and re-instantiated for each scaffold
-            seq_maps: vec![seq_map; n_seqs], // individual `seq_maps` are reused for all scaffolds
-            seq_pos0: 0,
-            scaffold_pos0: 0,
-        }
+        let n_poa = n_bases / 10;
+        (
+            Self {
+                cfg,
+                base_capacity: n_bases,
+                scaffold:     Vec::with_capacity(n_bases),
+                scaffold_span: ReferenceSpan::default(),
+                scaffold_len: 0,
+                coverage: Vec::with_capacity(n_bases),
+                aligner: None,
+                seqs:         Vec::with_capacity(n_seqs), // `seqs` is cleared and re-instantiated for each scaffold
+                seq_maps: vec![seq_map; n_seqs], // individual `seq_maps` are reused for all scaffolds
+                seq_pos0: 0,
+                scaffold_pos0: 0,
+            },
+            PoaPool::with_capacity(poa_config, n_seqs, n_bases, n_poa),
+        )
     }
 
     /// Reset a `Resolver` to begin a new consensus event by adding a new
@@ -169,19 +176,17 @@ impl Resolver {
         scaffold_span: ReferenceSpan,
     ) {
         self.scaffold.clear();
-        self.scaffold.extend(scaffold.iter().map(|base|{
-            match base {
-                b'A' | b'a' => b'A',
-                b'T' | b't' => b'T',
-                b'C' | b'c' => b'C',
-                b'G' | b'g' => b'G',
-                _ => b'N',
-            }
+        self.scaffold.extend(scaffold.iter().map(|base| match base {
+            b'A' | b'a' => b'A',
+            b'T' | b't' => b'T',
+            b'C' | b'c' => b'C',
+            b'G' | b'g' => b'G',
+            _ => b'N',
         }));
         self.scaffold_span = scaffold_span;
         self.scaffold_len = scaffold.len();
-        self.is_identical.clear();
-        self.is_identical.resize(scaffold.len(), true);
+        self.coverage.clear();
+        self.coverage.resize(scaffold.len(), Coverage{n_seqs: 0, n_identical: 0});
         self.aligner = None;
         self.seqs.clear(); // seqs is cleared to reset, seq_maps is not
     }
@@ -210,92 +215,85 @@ impl Resolver {
     /// are different at a position.
     pub fn get_consensus(
         &mut self,
+        poa_pool: &mut PoaPool,
     ) -> Vec<BaseByte> {
-        let mut chunk_pos0:  usize = 0; // leftmost pos0 of the next encountered chunk in scaffold coordinates
-        let mut left_start0: usize = 0; // leftmost pos0 of the uncommitted match span left of POA span
-        let mut left_end1:   usize = 0; // righmost pos1 of the uncommitted match span left of POA span
-        let mut poa_pending: bool  = false; // if true, left is set and we have a span pending POA
-        let mut consensus: Vec<BaseByte> = Vec::new();
 
-        let chunks: Vec<_> = self.is_identical
+        // abort and return scaffold if too few valid alignments exist to override it
+        // this is not considered an error condition
+        if self.seqs.len() < 2 { return self.scaffold.clone() }
+
+        // determine which scaffold positions must be resolved by POA
+        let is_poa: Vec<_> = self.coverage.iter().map(|coverage|{
+            // as above, it takes at least two other votes to override scaffold
+            coverage.n_seqs >= 2 && 
+            // most cases resolve to scaffold without POA if simple majority is identical
+            coverage.n_identical <= coverage.n_seqs / 2 
+        }).collect();
+        
+        // establish POA and non-POA chunks, where non-POA chunks must have sufficient anchor length
+        let chunks: Vec<_> = is_poa
             .chunk_by(|a, b| a == b)
-            .map(|chunk| (chunk[0], chunk.len()))
+            .map(|is_poa| {
+                let chunk_len = is_poa.len();
+                (
+                    is_poa[0] || chunk_len < self.cfg.anchor_len * 2, 
+                    chunk_len
+                )
+            })
             .collect();
-        // eprintln!("{:?}", chunks);
 
-        for (is_identical, n_chunk_pos) in chunks {
+        // collapse POA chunks when they included too-short non-POA chunks
+        // establish the chunk map into scaffold
+        let mut offset = 0;
+        let chunks: Vec<_> = chunks
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|chunks| {
+                let chunk_len: usize = chunks.iter().map(|c| c.1).sum();
+                let chunk = (chunks[0].0, offset, chunk_len);
+                offset += chunk_len;
+                chunk
+            })
+            .collect();
 
-            // in a span where all (or all but one) seqs matched scaffold
-            if is_identical {
+        // ensure sufficient POA capacity for parallel processing
+        let n_chunks = chunks.len();
+        poa_pool.fill_to(n_chunks / 2 + 1);
 
-                // initialize a first (and possibly only) matching span
-                if !poa_pending {
-                    left_start0 = chunk_pos0;
-                    left_end1 = chunk_pos0 + n_chunk_pos;
-
-                // process a prior variant span by POA if sufficient anchors or in last chunk
-                // too-short matching anchors are included in the POA span 
-                } else if n_chunk_pos >= self.cfg.anchor_len * 2 || 
-                          chunk_pos0 + n_chunk_pos == self.scaffold_len {
-                    let scaffold_end1 = (chunk_pos0 + self.cfg.anchor_len).min(self.scaffold_len);
-                    self.execute_poa(
-                        &mut consensus,
-                        left_start0,
-                        left_end1,
-                        scaffold_end1,
-                    );
-
-                    // jump the left flank to the current right flank
-                    // not including the flanking bases committed with POA above
-                    left_start0 = scaffold_end1; 
-                    left_end1 = chunk_pos0 + n_chunk_pos;
-                    poa_pending = false;
-                } 
-
-            // in a span where at least one sequence differed from the scaffold
-            } else {
-                poa_pending = true;
-            }
-            chunk_pos0 += n_chunk_pos;
-        }
-
-        // fill out any identical right-side base spans not used as POA anchors using scaffold bases
-        if !poa_pending {
-            if left_start0 < self.scaffold_len {
-                consensus.extend(&self.scaffold[left_start0..self.scaffold_len]);
-            }
-
-        // handle situation where the last chunk is variant 
-        } else {
-            self.execute_poa(
-                &mut consensus,
-                left_start0,
-                left_end1,
-                self.scaffold_len,
-            );
-        }
-
-        // return our result
-        consensus
+        // solve chunks in parallel and flatten to the output consensus
+        let max_chunk_i0 = n_chunks - 1;
+        // eprintln!("  solve parallel {}", n_chunks);
+        chunks.par_iter()
+            .zip(&mut poa_pool.poas)
+            .enumerate()
+            .map(|(chunk0, ((is_poa, offset, chunk_len), poa))|{
+                if *is_poa {
+                    let scaffold_start0 = offset.saturating_sub(self.cfg.anchor_len);
+                    let scaffold_end1 = (offset + chunk_len + self.cfg.anchor_len).min(self.scaffold_len);
+                    self.execute_poa(poa, scaffold_start0, scaffold_end1)
+                } else {
+                    let scaffold_start0 = if chunk0 == 0 {
+                        0
+                    } else {
+                        offset + self.cfg.anchor_len
+                    };
+                    let scaffold_end1 = if chunk0 == max_chunk_i0 {
+                        self.scaffold_len
+                    } else {
+                        offset + chunk_len - self.cfg.anchor_len
+                    };
+                    self.scaffold[scaffold_start0..scaffold_end1].to_vec()
+                }
+            }).flatten().collect()
     }
     /* -------------------------------------------------------------------------
     Resolver - internal function called by get_consensus
     ------------------------------------------------------------------------- */
-    /// Perform anchored partial order alignment on a span where at least one 
-    /// sequence differed from the others in a local region. 
     fn execute_poa(
-        &mut self,
-        consensus: &mut Vec<BaseByte>,
-        left_start0:   usize,
-        left_end1:     usize,
-        scaffold_end1: usize,
-    ) -> usize {
-
-        // fill out any identical left-side base spans not used as POA anchors using scaffold bases
-        let scaffold_start0 = left_end1.saturating_sub(self.cfg.anchor_len);
-        if scaffold_start0 > left_start0 {
-            consensus.extend(&self.scaffold[left_start0..scaffold_start0]);
-        }
+        &self,
+        poa: &mut Poa,
+        scaffold_start0: usize,
+        scaffold_end1:   usize,
+    ) -> Vec<BaseByte> {
 
         // collect the starts and ends of each sequence in its own coordinate space
         // find the length difference between the longest and shortest sequence
@@ -304,7 +302,6 @@ impl Resolver {
         let seq_ranges: Vec<_> = self.seqs.iter().enumerate()
             .map(|(seq0, _seq)| { // don't iterate over seq_maps, which is not cleared per scaffold
                 let seq_map = &self.seq_maps[seq0];
-                // eprintln!("{scaffold_start0} {:?} {scaffold_end1} {:?}", seq_map[scaffold_start0], seq_map[scaffold_end1 - 1]);
                 let Some(start0) = seq_map[scaffold_start0]   else { return None; };
                 let Some(end0)   = seq_map[scaffold_end1 - 1] else { return None; };
                 let len = end0 - start0 + 1;
@@ -318,7 +315,7 @@ impl Resolver {
 
         // seed the POA graph
         // eprintln!("scf {}", std::str::from_utf8(&self.scaffold[scaffold_start0..scaffold_end1]).unwrap());
-        self.poa.seed_new_graph( 
+        poa.seed_new_graph( 
             &self.scaffold[scaffold_start0..scaffold_end1], 
             Some(bandwidth)
         );
@@ -328,15 +325,11 @@ impl Resolver {
             // eprintln!("{seq0}");
             if let Some(range) = seq_ranges[seq0] {
                 // eprintln!("seq {}", std::str::from_utf8(&seq[range.0..range.1]).unwrap());
-                self.poa.add_seq(&seq[range.0..range.1]);
+                poa.add_seq(&seq[range.0..range.1]);
             }     
         }
-
-        // resolve and append the local consensus by heaviest bundle
-        consensus.extend(self.poa.get_heaviest_path());
-        scaffold_end1
+        poa.get_heaviest_path()
     }
-
     /* -------------------------------------------------------------------------
     Resolver - internal functions called by add_seq, add_aln
     ------------------------------------------------------------------------- */
@@ -344,14 +337,12 @@ impl Resolver {
     /// as ACGTN.
     fn add_sequence<'a, I: Iterator<Item = u8>>(&mut self, bytes: I) -> usize {
         let seq0 = self.seqs.len();
-        self.seqs.push(bytes.map(|base|{
-            match base {
-                b'A' | b'a' => b'A',
-                b'T' | b't' => b'T',
-                b'C' | b'c' => b'C',
-                b'G' | b'g' => b'G',
-                _ => b'N',
-            }
+        self.seqs.push(bytes.map(|base| match base {
+            b'A' | b'a' => b'A',
+            b'T' | b't' => b'T',
+            b'C' | b'c' => b'C',
+            b'G' | b'g' => b'G',
+            _ => b'N',
         }).collect());
         seq0
     }
@@ -392,59 +383,13 @@ impl Resolver {
         //       XxxxxA----     XxxxxA----     XxxxxA----
         // ==P===X====A====   P=X====A====        P=A====
         //      Xxx xxA----    Xxx xxA----    Xxx xxA----
-        // if self.scaffold_pos0 > 0 && self.seq_pos0 > 0 {
-        //     let scaffold_clip_start0 = self.scaffold_pos0 as isize - self.seq_pos0 as isize;
-
-        //     eprintln!("{} {} {}", self.scaffold_pos0, self.seq_pos0, scaffold_clip_start0);
-
-        //     // the < 0 check isn't working because GATTTCAT C AAGAGC was changed to GATTTCAT AAGAGC
-        //     //  X
-        //     // GATTTCATcAAGAGC
-        //     //          ||||||
-        //     // -GATTTCATAAGAGC
-        //     // GATTTCAT-AAGAGC
-
-
-        //     let (scaffold_clip_start0, seq_clip_start0) = if scaffold_clip_start0 < 0 {
-        //         match end_clip_mode {
-        //             EndClipMode::UseSome(n_additional_bases) => (
-        //                 0,
-        //                 self.seq_pos0.saturating_sub(self.scaffold_pos0 + n_additional_bases)
-        //             ),
-        //             _ => (0, 0), // only UseAll matches here
-        //         }
-        //     } else {
-        //         (scaffold_clip_start0 as usize, 0)
-        //     };
-
-        //     eprintln!("{} {}", scaffold_clip_start0, seq_clip_start0);
-
-
-            // let scaffold_clip_start0 = self.scaffold_pos0.saturating_sub(self.seq_pos0);
-            // let seq_clip_start0 = if scaffold_clip_start0 == 0 {
-            //     match end_clip_mode {
-            //         EndClipMode::UseSome(n_additional_bases) => {
-            //             self.seq_pos0.saturating_sub(self.scaffold_pos0 + n_additional_bases)
-            //         },
-            //         _ => 0, // only UseAll matches here
-            //     }
-            // } else {
-            //     self.seq_pos0.saturating_sub(self.scaffold_pos0)
-            // };
-
-            // // let scaffold_clip_start0 = self.scaffold_pos0.saturating_sub(self.seq_pos0);
-            // let (scaffold_clip_start0, seq_clip_start0) = match end_clip_mode {
-            //     EndClipMode::UseSome(n_additional_bases) => (
-            //         self.scaffold_pos0.saturating_sub(self.seq_pos0 + n_additional_bases),
-            //         self.seq_pos0.saturating_sub(self.scaffold_pos0 + n_additional_bases)
-            //     ),
-            //     _ => (0, 0), // only UseAll matches here
-            // };
-
-            // scaffold_clip_start0 poa_start0 seq_clip_start0
         if self.cfg.is_end_to_end && self.seq_pos0 > 0 {
+            if self.scaffold_pos0 > 0 {
+                for coverage in &mut self.coverage[0..self.scaffold_pos0]{
+                    coverage.n_seqs += 1;
+                }
+            }
             let n_scaffold_bases = self.scaffold_pos0.max(1);
-            self.is_identical[0..n_scaffold_bases].fill(false);
             self.seq_maps[seq0][0..n_scaffold_bases].fill(Some(0));
         }
     }
@@ -462,32 +407,15 @@ impl Resolver {
         if !self.cfg.is_end_to_end { return }
         let seq_len = self.seqs[seq0].len(); 
         if self.seq_pos0 < seq_len {
+            if self.scaffold_pos0 < self.scaffold_len {
+                for coverage in &mut self.coverage[self.scaffold_pos0..self.scaffold_len]{
+                    coverage.n_seqs += 1;
+                }
+            }
             let scaffold_start0 = self.scaffold_pos0.min(self.scaffold_len - 1);
             let seq_clip_end0 = Some(seq_len - 1);
-            self.is_identical[scaffold_start0..self.scaffold_len].fill(false);
             self.seq_maps[seq0][scaffold_start0..self.scaffold_len].fill(seq_clip_end0);
         }
-
-
-        // if self.scaffold_pos0 < self.scaffold_len && self.seq_pos0 < seq_len {
-        //     let clip_len = seq_len - self.seq_pos0; // all bases, including those overhanging scaffold
-        //     let scaffold_clip_end1 = (self.scaffold_pos0 + clip_len).min(self.scaffold_len);
-        //     let clip_len = scaffold_clip_end1 - self.scaffold_pos0; // dropping any scaffold overhang
-        //     let seq_clip_end0 = Some(match end_clip_mode {
-        //         EndClipMode::UseSome(n_additional_bases) => {
-        //             (self.seq_pos0 + clip_len + n_additional_bases).min(seq_len)
-        //         },
-        //         _ => seq_len, // only UseAll matches here
-        //     } - 1);
-        //     self.is_identical[self.scaffold_pos0..scaffold_clip_end1].fill(false);
-        //     self.seq_maps[seq0][self.scaffold_pos0..scaffold_clip_end1].fill(seq_clip_end0);
-        // }
     }
 
-    // /// Return the QNAME for a BamRecord.
-    // fn get_qname(aln: BamRecord) -> String {
-    //     let Some(qname) = aln.name() else { return "unkown".to_string() };
-    //     let Ok(qname) = std::str::from_utf8(qname) else { return "unkown".to_string() };
-    //     qname.to_string()
-    // }
 }

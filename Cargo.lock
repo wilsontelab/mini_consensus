@@ -336,6 +336,7 @@ dependencies = [
  "noodles",
  "rammap-core",
  "rand",
+ "rayon",
  "rustc-hash",
  "thiserror",
 ]
