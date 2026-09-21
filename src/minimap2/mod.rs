@@ -95,8 +95,8 @@ impl ReferenceSpan {
 /// Coverage and identity counts for sequences on scaffold positions.
 #[derive(Clone, Copy)]
 pub struct Coverage {
-    n_seqs: u16,
-    n_identical: u16,
+    n_seqs: i16,
+    n_identical: i16,
 }
 impl AddAssign for Coverage {
     fn add_assign(&mut self, rhs: Self) {
@@ -414,7 +414,7 @@ fn process_cigar_op_eqx(
             // qqqqQqqqqqq
             //    aA Aa
             for coverage in &mut coverage[*scaffold_pos0 - 1..=*scaffold_pos0] { 
-                coverage.n_identical = coverage.n_identical.saturating_sub(1); 
+                coverage.n_identical -= 1; 
             }
             *seq_pos0 += op_len;
         },

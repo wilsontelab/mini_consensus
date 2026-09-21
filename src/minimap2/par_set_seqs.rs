@@ -29,13 +29,21 @@ impl Resolver {
         let mut was_aligned: Vec<bool> = Vec::with_capacity(seqs.len());
 
         // align and map the sequences in parallel
+        let scaffold_len = self.scaffold_len;
+        let is_end_to_end = self.cfg.is_end_to_end;
         let par_results: Vec<ParResult> = seqs.into_par_iter().map(|seq|{
             let seq_len = seq.len();
             let mut par_result = ParResult{
                 aligned: false,
-                seq,
-                seq_map: vec![None; self.scaffold_len],
-                coverage: vec![Coverage{ n_seqs: 0, n_identical: 0 }; self.scaffold_len],
+                seq: seq.into_iter().map(|base| match base {
+                    b'A' | b'a' => b'A',
+                    b'T' | b't' => b'T',
+                    b'C' | b'c' => b'C',
+                    b'G' | b'g' => b'G',
+                    _ => b'N',
+                }).collect(),
+                seq_map: vec![None; scaffold_len],
+                coverage: vec![Coverage{ n_seqs: 0, n_identical: 0 }; scaffold_len],
             };
 
             // align seq to scaffold
@@ -74,7 +82,7 @@ impl Resolver {
             };
 
             // if end-to-end, fill any left-side clips in the alignment
-            if self.cfg.is_end_to_end {
+            if is_end_to_end {
                 fill_left_clip(
                     scaffold_pos0,
                     seq_pos0,
@@ -96,14 +104,14 @@ impl Resolver {
             }    
 
             // if end-to-end, fill any right-side clips in the alignment
-            if self.cfg.is_end_to_end {
+            if is_end_to_end {
                 fill_right_clip(
                     scaffold_pos0,
                     seq_pos0,
                     &mut par_result.seq_map,
                     &mut par_result.coverage,
                     seq_len,
-                    self.scaffold_len,
+                    scaffold_len,
                 );
             } 
             par_result
