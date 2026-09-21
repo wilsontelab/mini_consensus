@@ -19,7 +19,7 @@ impl Resolver {
         seqs: Vec<Vec<BaseByte>>,
         validate: V,
     ) -> Vec<bool> 
-    where V: Fn(&Mapping) -> bool + Send + Sync
+    where V: Fn(&Mapping, usize) -> bool + Send + Sync
     {
         let aligner = self.aligner.as_ref().expect(
             "Must call `set_scaffold_with_aligner()` before calling `par_set_seqs()`."
@@ -48,7 +48,7 @@ impl Resolver {
                map_result.mappings[1].is_primary { return par_result }
             let mapping = &map_result.mappings[0];
             let Some(cigar_ops) = &mapping.cigar_ops else { return par_result };
-            if !validate(mapping) { return par_result }
+            if !validate(mapping, seq_len) { return par_result }
             par_result.aligned = true;
 
             // determine the starting alignment position on scaffold and sequencee

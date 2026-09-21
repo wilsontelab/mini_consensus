@@ -45,7 +45,7 @@ resolver.set_scaffold_with_aligner(scaffold);
 
 // serial mode, suitable for a small number of sequences
 for seq in &seqs { 
-    match resolver.add_seq(seq, |_| true) {
+    match resolver.add_seq(seq, |_mapping| true) {
         Ok(_) => {},
         Err(e) => eprintln!("{:?}", e)
     }
@@ -54,7 +54,7 @@ for seq in &seqs {
 // alternative parallel mode, faster when there are many sequences
 // use either `add_seq()` or `par_set_seqs()`, not both!
 let seqs: Vec<_> = seqs.into_iter().map(|seq| seq.to_vec()).collect();
-resolver.par_set_seqs(seqs, |_| true);
+resolver.par_set_seqs(seqs, |_mapping, _seq_len| true);
 
 let consensus = resolver.get_consensus(&mut poa_pool);
 // use the resolver iteratively with new scaffold and seqs

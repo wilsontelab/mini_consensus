@@ -140,7 +140,7 @@ fn run_iterations(
         // eprintln!("scaffold");
         resolver.set_scaffold_with_aligner(&scaffold);
         // eprintln!("seqs");
-        resolver.par_set_seqs(seqs.clone(), |_| true);
+        resolver.par_set_seqs(seqs.clone(), |_mapping, _seq_len| true);
         // for seq in &seqs { 
         //     match resolver.add_seq(&seq.1, |_| true) {
         //         Ok(_) => {},
