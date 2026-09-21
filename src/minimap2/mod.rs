@@ -4,10 +4,12 @@
 
 // modules
 mod add_seq;
+mod par_set_seqs;
 
 // imports
+use std::ops::AddAssign;
 use rayon::prelude::*;
-use rammap::{Aligner, Preset};
+use rammap::{Aligner, Preset, CigarOp};
 use crate::poa::{PoaConfig, AlignmentMode, Poa, PoaPool};
 
 // data type aliases
@@ -96,6 +98,12 @@ pub struct Coverage {
     n_seqs: u16,
     n_identical: u16,
 }
+impl AddAssign for Coverage {
+    fn add_assign(&mut self, rhs: Self) {
+        self.n_seqs      += rhs.n_seqs;
+        self.n_identical += rhs.n_identical;
+    }
+}
 
 /* -----------------------------------------------------------------------------
 Resolver - scaffolded multiple sequence alignment and consensus
@@ -117,10 +125,6 @@ pub struct Resolver {
     // re-instantiated per scaffold, `seq_maps` are re-used in place.
     seqs: Vec<Vec<BaseByte>>,
     seq_maps: Vec<Vec<Option<SeqPos0>>>, // outer=seq, inner=scaffold SeqPos0, value=seq SeqPos0
-
-    // Fields used during seq_map construction.
-    seq_pos0: SeqPos0,
-    scaffold_pos0: SeqPos0,
 }
 impl Resolver {
 
@@ -156,8 +160,6 @@ impl Resolver {
                 aligner: None,
                 seqs:         Vec::with_capacity(n_seqs), // `seqs` is cleared and re-instantiated for each scaffold
                 seq_maps: vec![seq_map; n_seqs], // individual `seq_maps` are reused for all scaffolds
-                seq_pos0: 0,
-                scaffold_pos0: 0,
             },
             PoaPool::with_capacity(poa_config, n_seqs, n_bases, n_poa),
         )
@@ -360,62 +362,138 @@ impl Resolver {
             self.seq_maps.push(seq_map);
         }
     }
+}
 
-    /// Include any left-clipped bases of a sequence in the consensus in
-    /// end-to-end mode. 
-    fn fill_left_clip(&mut self, seq0: usize) {
-        // o--O------           overhang beyond scaffold, aligned continuously to reference (`add_aln` only)
-        // xxxo------           overhang beyond scaffold, clipped, e.g., an SV junction
-        //  xxXxxo--------      overhang beyond scaffold, clipped at internal position
-        //    ...Xxo------      end clip on internal alignment, no extension beyond scaffold
-        //    ...o-------       continuous internal alignment to scaffold
-        //    o------------     continuous complete alignment to scaffold
-        // +++=============+++  scaffold without reference flanks 
+/* -----------------------------------------------------------------------------
+Resolver - non-self functions suitable for parallelization
+----------------------------------------------------------------------------- */
+// constants
+// 0 => 'M', 1 => 'I', 2 => 'D', 3 => 'N', 4 => 'S', 5 => 'H', 7 => '=', 8 => 'X', _ => '?'
+const MATCH:     u8 = 7;
+const MISMATCH:  u8 = 8;
+const INSERTION: u8 = 1;
+const DELETION:  u8 = 2;
 
-        // if clip is too far from the left end of scaffold, never use the clip
-        //  - internal clips are ignored
-        //  - expect other reads with random ends to cover the potential variant span
-        // if clip is close enough to the left end, force variant span to scaffold start
-
-        // ==P===X====A====   P=X====A====        P=A====
-        //       XxxxxA----     XxxxxA----     XxxxxA----
-        // =P===X== ==A====   PX== ==A====        P=A====
-        //       XxxxxA----     XxxxxA----     XxxxxA----
-        // ==P===X====A====   P=X====A====        P=A====
-        //      Xxx xxA----    Xxx xxA----    Xxx xxA----
-        if self.cfg.is_end_to_end && self.seq_pos0 > 0 {
-            if self.scaffold_pos0 > 0 {
-                for coverage in &mut self.coverage[0..self.scaffold_pos0]{
-                    coverage.n_seqs += 1;
-                }
+/// Process a single eqx CIGAR operation to build a scaffold map. Only 
+/// =, X, +, and - operations are expected and processed. In particular,
+/// outer clipped bases are not present in `rammap::mapping.cigar_ops`.
+#[inline(always)]
+fn process_cigar_op_eqx(
+    scaffold_pos0: &mut usize,
+    seq_pos0: &mut usize,
+    seq_map: &mut [Option<SeqPos0>],
+    coverage: &mut [Coverage],
+    op: &CigarOp,
+){
+    let op_len = op.len as usize;
+    match op.op {
+        MATCH => { 
+            let mut seq_pos: std::ops::Range<_> = *seq_pos0..*seq_pos0 + op_len;
+            seq_map[*scaffold_pos0..*scaffold_pos0 + op_len]
+                .fill_with(|| seq_pos.next());
+            for coverage in &mut coverage[*scaffold_pos0..*scaffold_pos0 + op_len] { 
+                coverage.n_identical += 1; 
             }
-            let n_scaffold_bases = self.scaffold_pos0.max(1);
-            self.seq_maps[seq0][0..n_scaffold_bases].fill(Some(0));
-        }
-    }
-
-    /// Include any right-clipped bases of a sequence in the consensus in
-    /// end-to-end mode. 
-    fn fill_right_clip(&mut self, seq0: usize){ 
-        //          ------O--o  overhang beyond scaffold, aligned continuously to reference (`add_aln` only)
-        //          ------oxxx  overhang beyond scaffold, clipped, e.g., an SV junction
-        //     --------oxxXxx   overhang beyond scaffold, clipped at internal position
-        //     ------oxX...     end clip on internal alignment, no extension beyond scaffold
-        //       ------o...     continuous internal alignment to scaffold
-        //    ------------o     continuous complete alignment to scaffold
-        // +++=============+++  scaffold with reference flanks 
-        if !self.cfg.is_end_to_end { return }
-        let seq_len = self.seqs[seq0].len(); 
-        if self.seq_pos0 < seq_len {
-            if self.scaffold_pos0 < self.scaffold_len {
-                for coverage in &mut self.coverage[self.scaffold_pos0..self.scaffold_len]{
-                    coverage.n_seqs += 1;
-                }
+            *scaffold_pos0 += op_len;
+            *seq_pos0      += op_len;
+        },
+        MISMATCH => {
+            //     S
+            // rrrrRrrrr
+            // qqqqQqqqq
+            //     A
+            let mut seq_pos = *seq_pos0..*seq_pos0 + op_len;
+            seq_map[*scaffold_pos0..*scaffold_pos0 + op_len]
+                .fill_with(|| seq_pos.next());
+            *scaffold_pos0 += op_len;
+            *seq_pos0      += op_len;
+        },
+        INSERTION => {
+            //    *III 
+            // rrrr   Rrrr
+            // qqqqQqqqqqq
+            //    aA Aa
+            for coverage in &mut coverage[*scaffold_pos0 - 1..=*scaffold_pos0] { 
+                coverage.n_identical = coverage.n_identical.saturating_sub(1); 
             }
-            let scaffold_start0 = self.scaffold_pos0.min(self.scaffold_len - 1);
-            let seq_clip_end0 = Some(seq_len - 1);
-            self.seq_maps[seq0][scaffold_start0..self.scaffold_len].fill(seq_clip_end0);
-        }
+            *seq_pos0 += op_len;
+        },
+        DELETION => {
+            //     DDD
+            // rrrrRrrrrrr
+            // qqqq   Qqqq
+            //   aA   Aa
+            seq_map[*scaffold_pos0..*scaffold_pos0 + op_len]
+                .fill(Some(*seq_pos0 - 1));
+            *scaffold_pos0 += op_len;
+        },
+        _ => panic!("Unexpected CIGAR operation: {:?}", op),
     }
+}
 
+/// Include any left-clipped bases of a sequence in the consensus in
+/// end-to-end mode. 
+fn fill_left_clip(
+    scaffold_pos0: usize,
+    seq_pos0: usize,
+    seq_map: &mut [Option<SeqPos0>],
+    coverage: &mut [Coverage],
+) {
+    // o--O------           overhang beyond scaffold, aligned continuously to reference (`add_aln` only)
+    // xxxo------           overhang beyond scaffold, clipped, e.g., an SV junction
+    //  xxXxxo--------      overhang beyond scaffold, clipped at internal position
+    //    ...Xxo------      end clip on internal alignment, no extension beyond scaffold
+    //    ...o-------       continuous internal alignment to scaffold
+    //    o------------     continuous complete alignment to scaffold
+    // +++=============+++  scaffold without reference flanks 
+
+    // if clip is too far from the left end of scaffold, never use the clip
+    //  - internal clips are ignored
+    //  - expect other reads with random ends to cover the potential variant span
+    // if clip is close enough to the left end, force variant span to scaffold start
+
+    // ==P===X====A====   P=X====A====        P=A====
+    //       XxxxxA----     XxxxxA----     XxxxxA----
+    // =P===X== ==A====   PX== ==A====        P=A====
+    //       XxxxxA----     XxxxxA----     XxxxxA----
+    // ==P===X====A====   P=X====A====        P=A====
+    //      Xxx xxA----    Xxx xxA----    Xxx xxA----
+    if seq_pos0 > 0 {
+        if scaffold_pos0 > 0 {
+            for coverage in &mut coverage[0..scaffold_pos0]{
+                coverage.n_seqs += 1;
+            }
+        }
+        let n_scaffold_bases = scaffold_pos0.max(1);
+        seq_map[0..n_scaffold_bases].fill(Some(0));
+    }
+}
+
+/// Include any right-clipped bases of a sequence in the consensus in
+/// end-to-end mode. 
+fn fill_right_clip(
+    scaffold_pos0: usize,
+    seq_pos0: usize,
+    seq_map: &mut [Option<SeqPos0>],
+    coverage: &mut [Coverage],
+    seq_len: usize,
+    scaffold_len: usize,
+) {
+    //          ------O--o  overhang beyond scaffold, aligned continuously to reference (`add_aln` only)
+    //          ------oxxx  overhang beyond scaffold, clipped, e.g., an SV junction
+    //     --------oxxXxx   overhang beyond scaffold, clipped at internal position
+    //     ------oxX...     end clip on internal alignment, no extension beyond scaffold
+    //       ------o...     continuous internal alignment to scaffold
+    //    ------------o     continuous complete alignment to scaffold
+    // +++=============+++  scaffold with reference flanks 
+    if seq_pos0 < seq_len {
+        if scaffold_pos0 < scaffold_len {
+            for coverage in &mut coverage[scaffold_pos0..scaffold_len]{
+                coverage.n_seqs += 1;
+            }
+        }
+        let scaffold_start0 = scaffold_pos0.min(scaffold_len - 1);
+        let seq_clip_end0 = Some(seq_len - 1);
+        seq_map[scaffold_start0..scaffold_len].fill(seq_clip_end0);
+    }
 }

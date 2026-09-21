@@ -31,7 +31,6 @@ mini-consensus = { git = "https://github.com/wilsontelab/mini_consensus", branch
 ```rust
 use mini_consensus::*;
 
-// your sequences will be longer
 let scaffold = b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA"; 
 let seqs: Vec<&[u8]> = vec![
     b"GAAATAAGAACCGGCAAATCCTACACTAATCCCTCCACACCCAACATTGAAGACTGATGTA",
@@ -43,12 +42,20 @@ let (mut resolver, mut poa_pool) = Resolver::with_capacity(
     scaffold.len() * 2
 );
 resolver.set_scaffold_with_aligner(scaffold);
+
+// serial mode, suitable for a small number of sequences
 for seq in &seqs { 
     match resolver.add_seq(seq, |_| true) {
         Ok(_) => {},
         Err(e) => eprintln!("{:?}", e)
     }
 }
+
+// alternative parallel mode, faster when there are many sequences
+// use either `add_seq()` or `par_set_seqs()`, not both!
+let seqs: Vec<_> = seqs.into_iter().map(|seq| seq.to_vec()).collect();
+resolver.par_set_seqs(seqs, |_| true);
+
 let consensus = resolver.get_consensus(&mut poa_pool);
 // use the resolver iteratively with new scaffold and seqs
 ```
@@ -97,7 +104,9 @@ Finally, the Rust
 crate is automatically used to build the consensus in parallel over the various
 interspersed anchor and POA chunks of the initial scaffold maps, i.e., POA
 calls can often run concurrently before stitching together the full consensus.
-This is the origin of the `poa_pool` obect in the code examples.
+This is the origin of the `poa_pool` obect in the code examples. Use cases with
+large numbers of input sequences can also be accelerated by using 
+`par_set_seqs()` instead of `add_seq()` to populate the resolver in parallel.
 
 ## Relationship between scaffold and other sequences
 
@@ -112,7 +121,7 @@ does not select a seed or scaffold for you as the proper choice will depend on
 your application. 
 
 Although `mini_consensus` does not depend on what your input sequences are, they 
-are typically long HiFi sequencing reads. The scaffold might be one of those  
+are typically long HiFi sequencing reads. The scaffold might be one of those 
 reads chosen to be representative. Alternatively, you may choose to use an 
 external reference sequence as scaffold, noting that by design 
 **scaffold base values are reported when all input sequences have a different value**, 
@@ -217,11 +226,10 @@ a model for clonal variants that should be found in the consensus.
 We performed these tests for 1K iterations at a range of scaffold sizes, 
 sequence counts, and random variant densities and measured the elapsed time and 
 frequency of consensuses that matched expectations above. Results are tabulated 
-below (times include random sequence generation but that is fast relative to 
-consensus resolution).
+below (times include random sequence generation).
 
-PENDING (most cases yield sub-second resolution of long-read consensuses, often
-less than 100 milliseconds)
+PENDING (most cases resolve long-read consensuses in less than 50 milliseconds
+when using parallel processing on 12 cores)
 
 ## Other differences between `poa_consensus` and `mini_consensus`
 

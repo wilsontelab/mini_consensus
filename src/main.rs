@@ -72,7 +72,7 @@ fn run_benchmarking() {
     let mut rng = rand::thread_rng();
     for n_bases in vec![500, 5000, 25000] {
         let n_clonal_variants = (n_bases as f64 * CLONAL_VARIANT_RATE) as usize;
-        for n_seqs in vec![2, 3, 15] { // 30
+        for n_seqs in vec![2, 5, 15, 30] {
             for error_rate in vec![0.001, 0.01] { //, 0.05
                 let n_errors = (n_bases as f64 * error_rate) as usize;
                 run_iterations(
@@ -128,7 +128,8 @@ fn run_iterations(
             n_clonal_variants,
             rng,
         ));
-        let expected = if has_clonal_variants { seqs[0].clone() }  else { scaffold.clone() };
+        let expected = if has_clonal_variants { seqs[0].clone() }  
+                                else { scaffold.clone() };
         for _ in 1..n_seqs {
             seqs.push(modify_seq(
                 &expected,
@@ -139,12 +140,13 @@ fn run_iterations(
         // eprintln!("scaffold");
         resolver.set_scaffold_with_aligner(&scaffold);
         // eprintln!("seqs");
-        for seq in &seqs { 
-            match resolver.add_seq(seq, |_| true) {
-                Ok(_) => {},
-                Err(e) => eprintln!("{:?}", e)
-            }
-        }
+        resolver.par_set_seqs(seqs.clone(), |_| true);
+        // for seq in &seqs { 
+        //     match resolver.add_seq(&seq.1, |_| true) {
+        //         Ok(_) => {},
+        //         Err(e) => eprintln!("{:?}", e)
+        //     }
+        // }
         // eprintln!("consensus");
         let consensus = resolver.get_consensus(&mut poa_pool);
         if consensus == expected {

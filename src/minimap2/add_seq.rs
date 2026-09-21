@@ -3,15 +3,8 @@
 
 // imports
 use thiserror::Error;
-use rammap::{Strand, CigarOp, Mapping};
+use rammap::{Strand, Mapping};
 use super::*;
-
-// constants
-// 0 => 'M', 1 => 'I', 2 => 'D', 3 => 'N', 4 => 'S', 5 => 'H', 7 => '=', 8 => 'X', _ => '?'
-const MATCH:     u8 = 7;
-const MISMATCH:  u8 = 8;
-const INSERTION: u8 = 1;
-const DELETION:  u8 = 2;
 
 /// Errors encountered while aligning a requested sequence to the scaffold.
 #[derive(Error, Debug)]
@@ -45,6 +38,7 @@ impl Resolver {
         // create an owned copy of seq
         let seq0 = self.add_sequence(seq.iter().copied());
         let seq_mut = &mut self.seqs[seq0];
+        let seq_len = seq_mut.len();
 
         // align seq to scaffold
         let aligner = self.aligner.as_ref().expect(
@@ -66,8 +60,8 @@ impl Resolver {
         for coverage in &mut self.coverage[mapping.target_start..mapping.target_end]{
             coverage.n_seqs += 1;
         }
-        self.scaffold_pos0 = mapping.target_start;
-        self.seq_pos0 = if mapping.strand == Strand::Reverse {
+        let mut scaffold_pos0 = mapping.target_start;
+        let mut seq_pos0 = if mapping.strand == Strand::Reverse {
             for base in seq_mut.iter_mut() {
                 *base = match base {
                     b'A' => b'T',
@@ -78,7 +72,7 @@ impl Resolver {
                 };               
             }
             seq_mut.reverse();
-            seq_mut.len() - mapping.query_end
+            seq_len - mapping.query_end
         } else {
             mapping.query_start
         };
@@ -87,16 +81,38 @@ impl Resolver {
         self.reset_scaffold_map(seq0);
 
         // if end-to-end, fill any left-side clips in the alignment
-        self.fill_left_clip(seq0);
+        if self.cfg.is_end_to_end {
+            fill_left_clip(
+                scaffold_pos0,
+                seq_pos0,
+                &mut self.seq_maps[seq0],
+                &mut self.coverage,
+            );
+        } 
 
         // map the aligned portion of seq
         // eprintln!("{}S, {:?}", mapping.query_start, mapping.cigar);
         for op in cigar_ops {
-            self.process_cigar_op_eqx(seq0, op);                
+            process_cigar_op_eqx(
+                &mut scaffold_pos0, 
+                &mut seq_pos0, 
+                &mut self.seq_maps[seq0],
+                &mut self.coverage,
+                op,
+            );                
         }    
 
         // if end-to-end, fill any right-side clips in the alignment
-        self.fill_right_clip(seq0);
+        if self.cfg.is_end_to_end {
+            fill_right_clip(
+                scaffold_pos0,
+                seq_pos0,
+                &mut self.seq_maps[seq0],
+                &mut self.coverage,
+                seq_len,
+                self.scaffold_len,
+            );
+        } 
         
         // return success
         Ok(())
@@ -130,56 +146,5 @@ impl Resolver {
     fn abort_add_seq(&mut self, error: AddSeqError) -> Result<(), AddSeqError> {
         self.seqs.pop();
         Err(error)
-    }
-
-    /// Process a single eqx CIGAR operation to build a scaffold map. Only 
-    /// =, X, +, and - operations are expected and processed. In particular,
-    /// outer clipped bases are not present in `rammap::mapping.cigar_ops`.
-    #[inline(always)]
-    fn process_cigar_op_eqx(&mut self, seq0: usize, op: &CigarOp){
-        let op_len = op.len as usize;
-        match op.op {
-            MATCH => { 
-                let mut seq_pos = self.seq_pos0..self.seq_pos0 + op_len;
-                self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
-                    .fill_with(|| seq_pos.next());
-                for coverage in &mut self.coverage[self.scaffold_pos0..self.scaffold_pos0 + op_len] { 
-                    coverage.n_identical += 1; 
-                }
-                self.scaffold_pos0 += op_len;
-                self.seq_pos0      += op_len;
-            },
-            MISMATCH => {
-                //     S
-                // rrrrRrrrr
-                // qqqqQqqqq
-                //     A
-                let mut seq_pos = self.seq_pos0..self.seq_pos0 + op_len;
-                self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
-                    .fill_with(|| seq_pos.next());
-                self.scaffold_pos0 += op_len;
-                self.seq_pos0      += op_len;
-            },
-            INSERTION => {
-                //    *III 
-                // rrrr   Rrrr
-                // qqqqQqqqqqq
-                //    aA Aa
-                for coverage in &mut self.coverage[self.scaffold_pos0 - 1..=self.scaffold_pos0] { 
-                    coverage.n_identical = coverage.n_identical.saturating_sub(1); 
-                }
-                self.seq_pos0 += op_len;
-            },
-            DELETION => {
-                //     DDD
-                // rrrrRrrrrrr
-                // qqqq   Qqqq
-                //   aA   Aa
-                self.seq_maps[seq0][self.scaffold_pos0..self.scaffold_pos0 + op_len]
-                    .fill(Some(self.seq_pos0 - 1));
-                self.scaffold_pos0 += op_len;
-            },
-            _ => panic!("Unexpected CIGAR operation: {:?}", op),
-        }
     }
 }
